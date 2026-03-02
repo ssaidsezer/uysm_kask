@@ -1,0 +1,9 @@
+streamlit
+openai>=1.0.0
+chromadb
+sentence-transformers
+pypdf
+pandas
+requests
+python-dotenv
+numpy<2
