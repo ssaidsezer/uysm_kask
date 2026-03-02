@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 import io
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -82,10 +84,23 @@ def main() -> None:
             value=DEFAULT_COLLECTION_NAME,
         )
 
-        qa_model_name = st.text_input(
-            "Ollama QA modeli",
+        qa_model_list_str = st.text_input(
+            "Ollama QA modelleri (virgülle ayır)",
             value=QA_OLLAMA_MODEL,
-            help="Örn: qwen3:1.7b (Ollama'daki model etiketi).",
+            help="Örn: qwen3:1.7b, qwen3:4b (Ollama'daki model etiketleri).",
+        )
+
+        qa_model_candidates = [
+            m.strip() for m in qa_model_list_str.split(",") if m.strip()
+        ]
+        if not qa_model_candidates:
+            qa_model_candidates = [QA_OLLAMA_MODEL]
+
+        qa_models_selected = st.multiselect(
+            "Değerlendirilecek QA modelleri",
+            options=qa_model_candidates,
+            default=qa_model_candidates,
+            help="Aynı sorular için birden fazla modeli RAG'li ve RAG'siz karşılaştırmak için birden çok model seç.",
         )
 
         eval_model_name = st.text_input(
@@ -239,6 +254,9 @@ def main() -> None:
     with tab_chat:
         st.subheader("Manuel soru sor ve RAG vs RAG'siz karşılaştır")
 
+        if "chat_eval_rows" not in st.session_state:
+            st.session_state["chat_eval_rows"] = []
+
         question = st.text_area(
             "Soru",
             placeholder="Buraya modelden cevap almak istediğin soruyu yaz...",
@@ -281,83 +299,152 @@ def main() -> None:
             collection = get_or_create_collection(client, name=collection_name)
             embedding_model = load_embedding_model()
 
-            cols = st.columns(2) if compare_no_rag else [st.container()]
+            # Ortak RAG context'ini bir kez hesapla
+            context = ""
+            try:
+                from rag_index import retrieve_context  # local import to avoid cycle
+            except Exception:
+                retrieve_context = None  # type: ignore[assignment]
 
-            # --- RAG'li cevap ---
-            with st.spinner("RAG'li cevap üretiliyor ve değerlendiriliyor..."):
-                context = ""
-                try:
-                    from rag_index import retrieve_context  # local import to avoid cycle
-                except Exception:
-                    retrieve_context = None  # type: ignore[assignment]
-
-                if retrieve_context is not None:
-                    context = retrieve_context(
-                        question=question,
-                        collection=collection,
-                        embedding_model=embedding_model,
-                        k=int(k_chat),
-                    )
-
-                rag_result = generate_rag_answer_ollama(
+            if retrieve_context is not None:
+                context = retrieve_context(
                     question=question,
-                    context=context,
-                    model=qa_model_name,
+                    collection=collection,
+                    embedding_model=embedding_model,
+                    k=int(k_chat),
                 )
 
-                rag_record = {
-                    "model": f"{qa_model_name} (RAG)",
-                    "question_index": 0,
-                    "question": question,
-                    "observation_idea": expected_answer or "",
-                    "model_answer": rag_result.get("answer", ""),
-                    "response_time_seconds": rag_result.get(
-                        "response_time_seconds", 0.0
-                    ),
-                }
+            run_timestamp = datetime.utcnow().isoformat()
+            selected_models = qa_models_selected or qa_model_candidates
 
-                rag_eval = evaluate_answer(
-                    record=rag_record,
-                    eval_model=eval_model_name,
-                    client=openai_client,
-                )
+            for qa_model_name in selected_models:
+                st.markdown(f"**Model: {qa_model_name}**")
+                cols = st.columns(2) if compare_no_rag else [st.container()]
 
-            with cols[0]:
-                st.markdown("**RAG'li cevap (Ollama)**")
-                st.write(rag_record["model_answer"])
-                st.markdown("**RAG'li cevap eval (OpenAI)**")
-                st.json(rag_eval)
-
-            # --- RAG'siz cevap ---
-            if compare_no_rag:
-                with st.spinner("RAG'siz cevap üretiliyor ve değerlendiriliyor..."):
-                    no_rag_result = generate_no_rag_answer_ollama(
+                # --- RAG'li cevap ---
+                with st.spinner(
+                    f"{qa_model_name} için RAG'li cevap üretiliyor ve değerlendiriliyor..."
+                ):
+                    rag_result = generate_rag_answer_ollama(
                         question=question,
+                        context=context,
                         model=qa_model_name,
                     )
 
-                    no_rag_record = {
-                        "model": f"{qa_model_name} (RAG'siz)",
+                    rag_record = {
+                        "model": f"{qa_model_name} (RAG)",
                         "question_index": 0,
                         "question": question,
                         "observation_idea": expected_answer or "",
-                        "model_answer": no_rag_result.get("answer", ""),
-                        "response_time_seconds": no_rag_result.get(
+                        "model_answer": rag_result.get("answer", ""),
+                        "response_time_seconds": rag_result.get(
                             "response_time_seconds", 0.0
                         ),
                     }
 
-                    no_rag_eval = evaluate_answer(
-                        record=no_rag_record,
+                    rag_eval = evaluate_answer(
+                        record=rag_record,
                         eval_model=eval_model_name,
                         client=openai_client,
                     )
 
-                with cols[1]:
-                    st.markdown("**RAG'siz cevap (Ollama)**")
-                    st.write(no_rag_record["model_answer"])
-                    st.markdown("**RAG'siz cevap eval (OpenAI)**")
-                    st.json(no_rag_eval)
+                with cols[0]:
+                    st.markdown("**RAG'li cevap (Ollama)**")
+                    st.write(rag_record["model_answer"])
+                    st.markdown("**RAG'li cevap eval (OpenAI)**")
+                    st.json(rag_eval)
+
+                # RAG'li satırı CSV loguna ekle
+                st.session_state["chat_eval_rows"].append(
+                    {
+                        "timestamp": run_timestamp,
+                        "model": qa_model_name,
+                        "mode": "RAG",
+                        "question": question,
+                        "expected_answer": (expected_answer or "").strip(),
+                        "model_answer": rag_record["model_answer"],
+                        "response_time_seconds": rag_record["response_time_seconds"],
+                        "tokens_per_second": rag_result.get("tokens_per_second") or "",
+                        "ai_score": rag_eval.get("ai_score", ""),
+                        "ai_verdict": rag_eval.get("ai_verdict", ""),
+                        "ai_hallucination_risk": rag_eval.get(
+                            "ai_hallucination_risk", ""
+                        ),
+                    }
+                )
+
+                # --- RAG'siz cevap ---
+                if compare_no_rag:
+                    with st.spinner(
+                        f"{qa_model_name} için RAG'siz cevap üretiliyor ve değerlendiriliyor..."
+                    ):
+                        no_rag_result = generate_no_rag_answer_ollama(
+                            question=question,
+                            model=qa_model_name,
+                        )
+
+                        no_rag_record = {
+                            "model": f"{qa_model_name} (RAG'siz)",
+                            "question_index": 0,
+                            "question": question,
+                            "observation_idea": expected_answer or "",
+                            "model_answer": no_rag_result.get("answer", ""),
+                            "response_time_seconds": no_rag_result.get(
+                                "response_time_seconds", 0.0
+                            ),
+                        }
+
+                        no_rag_eval = evaluate_answer(
+                            record=no_rag_record,
+                            eval_model=eval_model_name,
+                            client=openai_client,
+                        )
+
+                    with cols[1]:
+                        st.markdown("**RAG'siz cevap (Ollama)**")
+                        st.write(no_rag_record["model_answer"])
+                        st.markdown("**RAG'siz cevap eval (OpenAI)**")
+                        st.json(no_rag_eval)
+
+                    # RAG'siz satırı CSV loguna ekle
+                    st.session_state["chat_eval_rows"].append(
+                        {
+                            "timestamp": run_timestamp,
+                            "model": qa_model_name,
+                            "mode": "NO_RAG",
+                            "question": question,
+                            "expected_answer": (expected_answer or "").strip(),
+                            "model_answer": no_rag_record["model_answer"],
+                            "response_time_seconds": no_rag_record[
+                                "response_time_seconds"
+                            ],
+                            "tokens_per_second": no_rag_result.get(
+                                "tokens_per_second"
+                            )
+                            or "",
+                            "ai_score": no_rag_eval.get("ai_score", ""),
+                            "ai_verdict": no_rag_eval.get("ai_verdict", ""),
+                            "ai_hallucination_risk": no_rag_eval.get(
+                                "ai_hallucination_risk", ""
+                            ),
+                        }
+                    )
+
+        # Manuel chat logunu CSV olarak indirme
+        if st.session_state.get("chat_eval_rows"):
+            csv_buffer = io.StringIO()
+            fieldnames = list(st.session_state["chat_eval_rows"][0].keys())
+            writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in st.session_state["chat_eval_rows"]:
+                writer.writerow(row)
+
+            st.download_button(
+                label="Manuel chat sonuçlarını CSV olarak indir",
+                data=csv_buffer.getvalue().encode("utf-8"),
+                file_name="chat_results.csv",
+                mime="text/csv",
+            )
 
 
 if __name__ == "__main__":

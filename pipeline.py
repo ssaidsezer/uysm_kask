@@ -120,9 +120,28 @@ def generate_rag_answer_ollama(
 
     answer = answer.replace("\r\n", "\n").strip()
 
+    # Optional token-level statistics from Ollama
+    eval_count = None
+    eval_duration_seconds = None
+    tokens_per_second = None
+    if isinstance(data, dict):
+        raw_eval_count = data.get("eval_count")
+        raw_eval_duration = data.get("eval_duration")
+        if isinstance(raw_eval_count, (int, float)) and isinstance(
+            raw_eval_duration, (int, float)
+        ):
+            eval_count = int(raw_eval_count)
+            # Ollama durations are in nanoseconds
+            eval_duration_seconds = float(raw_eval_duration) / 1e9
+            if eval_duration_seconds > 0:
+                tokens_per_second = eval_count / eval_duration_seconds
+
     return {
         "answer": answer,
         "response_time_seconds": dt,
+        "eval_count": eval_count,
+        "eval_duration_seconds": eval_duration_seconds,
+        "tokens_per_second": tokens_per_second,
     }
 
 
@@ -186,9 +205,27 @@ def generate_no_rag_answer_ollama(
 
     answer = answer.replace("\r\n", "\n").strip()
 
+    # Optional token-level statistics from Ollama
+    eval_count = None
+    eval_duration_seconds = None
+    tokens_per_second = None
+    if isinstance(data, dict):
+        raw_eval_count = data.get("eval_count")
+        raw_eval_duration = data.get("eval_duration")
+        if isinstance(raw_eval_count, (int, float)) and isinstance(
+            raw_eval_duration, (int, float)
+        ):
+            eval_count = int(raw_eval_count)
+            eval_duration_seconds = float(raw_eval_duration) / 1e9
+            if eval_duration_seconds > 0:
+                tokens_per_second = eval_count / eval_duration_seconds
+
     return {
         "answer": answer,
         "response_time_seconds": dt,
+        "eval_count": eval_count,
+        "eval_duration_seconds": eval_duration_seconds,
+        "tokens_per_second": tokens_per_second,
     }
 
 
