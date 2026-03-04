@@ -168,22 +168,66 @@ def main() -> None:
         if not all_models:
             all_models = [QA_OLLAMA_MODEL]
 
-        # Değerlendirilecek QA modelleri: tik'lemeli seçim listesi
+        # Değerlendirilecek QA modelleri: arama kutulu ve açılır-kapanır seçim listesi
         st.markdown("**Değerlendirilecek QA modelleri**")
+
         qa_models_selected: List[str] = []
-        for model_name in all_models:
-            if st.checkbox(
-                model_name,
-                value=True,
-                key=f"qa_model_select_{model_name}",
-                help="Bu modeli RAG değerlendirmesine dahil et.",
-            ):
-                qa_models_selected.append(model_name)
+        with st.expander("Modelleri göster", expanded=False):
+            qa_model_search = st.text_input(
+                "Model ara",
+                value=st.session_state.get("qa_model_search", ""),
+                placeholder="Model adında ara...",
+                key="qa_model_search",
+            )
+
+            search_value = st.session_state.get("qa_model_search", "")
+            if search_value:
+                filtered_models = [
+                    m for m in all_models if search_value.lower() in m.lower()
+                ]
+            else:
+                filtered_models = all_models
+
+            col_sel_all, col_desel_all = st.columns(2)
+            with col_sel_all:
+                if st.button("Hepsini seç", key="qa_select_all"):
+                    for m in filtered_models:
+                        st.session_state[f"qa_model_select_{m}"] = True
+            with col_desel_all:
+                if st.button("Hepsini kaldır", key="qa_deselect_all"):
+                    for m in filtered_models:
+                        st.session_state[f"qa_model_select_{m}"] = False
+
+            for model_name in filtered_models:
+                if st.checkbox(
+                    model_name,
+                    value=st.session_state.get(f"qa_model_select_{model_name}", True),
+                    key=f"qa_model_select_{model_name}",
+                    help="Bu modeli RAG değerlendirmesine dahil et.",
+                ):
+                    qa_models_selected.append(model_name)
+
+        eval_backend = st.selectbox(
+            "Değerlendirme motoru",
+            options=["OpenAI", "Yerel (Ollama)"],
+            index=0,
+            help="Cevapları OpenAI ile mi yoksa yerel bir Ollama modeliyle mi değerlendireceğini seç.",
+        )
 
         eval_model_name = st.text_input(
             "OpenAI değerlendirme modeli",
             value=EVAL_MODEL_NAME,
+            help="Sadece OpenAI değerlendirme motoru seçiliyse kullanılır.",
         )
+
+        local_eval_model_name: str | None = None
+        if eval_backend == "Yerel (Ollama)":
+            local_eval_model_name = st.selectbox(
+                "Yerel eval modeli (Ollama)",
+                options=all_models,
+                index=0,
+                help="Eval için kullanılacak yerel modeli seç.",
+            )
 
     tab_index, tab_eval, tab_chat = st.tabs(
         ["📚 PDF İndeksleme", "📊 CSV Değerlendirme", "💬 Manuel Chat Eval"]
@@ -294,11 +338,15 @@ def main() -> None:
                 st.error("CSV seçilmedi.")
                 return
 
-            if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
-                st.error("OpenAI API key gerekli (sidebar'dan girin veya ortam değişkeni ayarlayın).")
-                return
-
-            client = get_openai_client(api_key=openai_api_key or None)
+            if eval_backend == "OpenAI":
+                if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
+                    st.error(
+                        "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli (sidebar'dan girin veya ortam değişkeni ayarlayın)."
+                    )
+                    return
+                client = get_openai_client(api_key=openai_api_key or None)
+            else:
+                client = None
 
             try:
                 with st.spinner("Pipeline çalışıyor (RAG + değerlendirme)..."):
@@ -309,6 +357,8 @@ def main() -> None:
                         eval_model=eval_model_name,
                         k=int(k),
                         openai_client=client,
+                        eval_backend="openai" if eval_backend == "OpenAI" else "ollama",
+                        eval_local_model=local_eval_model_name,
                     )
             except Exception as exc:
                 st.error(f"Pipeline çalışırken bir hata oluştu ve işlem durduruldu: {exc}")
@@ -367,13 +417,15 @@ def main() -> None:
                 st.error("Lütfen bir soru gir.")
                 return
 
-            if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
-                st.error(
-                    "OpenAI API key gerekli (sidebar'dan girin veya ortam değişkeni ayarlayın)."
-                )
-                return
-
-            openai_client = get_openai_client(api_key=openai_api_key or None)
+            if eval_backend == "OpenAI":
+                if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
+                    st.error(
+                        "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli (sidebar'dan girin veya ortam değişkeni ayarlayın)."
+                    )
+                    return
+                openai_client = get_openai_client(api_key=openai_api_key or None)
+            else:
+                openai_client = None
 
             # Hazır bir Chroma koleksiyonu ve embedding modeli yükle
             client = get_chroma_client(persist_directory=chroma_dir)
@@ -396,7 +448,7 @@ def main() -> None:
                 )
 
             run_timestamp = datetime.utcnow().isoformat()
-            selected_models = qa_models_selected or qa_model_candidates
+            selected_models = qa_models_selected or all_models
 
             for qa_model_name in selected_models:
                 st.markdown(f"**Model: {qa_model_name}**")
@@ -424,10 +476,14 @@ def main() -> None:
                             ),
                         }
 
-                        rag_eval = evaluate_answer(
+                        rag_eval = evaluate_answer_any(
                             record=rag_record,
                             eval_model=eval_model_name,
                             client=openai_client,
+                            backend="openai"
+                            if eval_backend == "OpenAI"
+                            else "ollama",
+                            local_model=local_eval_model_name,
                         )
                 except Exception as exc:
                     st.error(
@@ -483,10 +539,14 @@ def main() -> None:
                                 ),
                             }
 
-                            no_rag_eval = evaluate_answer(
+                            no_rag_eval = evaluate_answer_any(
                                 record=no_rag_record,
                                 eval_model=eval_model_name,
                                 client=openai_client,
+                                backend="openai"
+                                if eval_backend == "OpenAI"
+                                else "ollama",
+                                local_model=local_eval_model_name,
                             )
                     except Exception as exc:
                         st.error(

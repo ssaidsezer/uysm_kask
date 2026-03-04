@@ -311,6 +311,140 @@ def evaluate_answer(
     return parsed
 
 
+def _extract_json_from_text(text: str) -> str:
+    """
+    Yerel modeller bazen JSON dışında ek metin üretebilir.
+    İlk '{' ile son '}' arasını almaya çalış.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
+def _evaluate_answer_local(
+    record: Dict,
+    model: str,
+    base_url: str = OLLAMA_BASE_URL,
+    timeout: int = 120,
+) -> Dict:
+    """
+    OpenAI yerine yerel bir modeli (örn. Ollama) eval için kullan.
+    """
+    system = (
+        "You are an evaluator in an automated pipeline.\n"
+        "Return ONE flat JSON object with exactly these keys:\n"
+        "{\n"
+        '  \"model\": string,\n'
+        '  \"question_index\": integer,\n'
+        '  \"question\": string,\n'
+        '  \"observation_idea\": string,\n'
+        '  \"model_answer\": string,\n'
+        '  \"response_time_seconds\": number,\n'
+        '  \"ai_verdict\": string,\n'
+        '  \"ai_score\": integer,\n'
+        '  \"ai_hallucination_risk\": string,\n'
+        '  \"ai_strengths\": string,\n'
+        '  \"ai_issues\": string,\n'
+        '  \"ai_suggested_fix\": string\n'
+        "}\n"
+        "JSON only, no extra text."
+    )
+
+    user = (
+        f'model: "{record["model"]}"\n'
+        f"question_index: {int(record['question_index'])}\n"
+        f'question: "{record["question"]}"\n'
+        f'observation_idea: "{record.get("observation_idea", "")}"\n'
+        f'model_answer: "{record.get("model_answer", "")}"\n'
+        f"response_time_seconds: {float(record.get('response_time_seconds', 0.0))}\n"
+    )
+
+    prompt = (
+        system
+        + "\n\n"
+        + user
+        + "\n\nYukarıdaki talimatlara göre SADECE geçerli bir JSON nesnesi üret."
+    )
+
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/chat",
+        json={
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "stream": False,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    content = ""
+    if isinstance(data, dict):
+        message = data.get("message") or {}
+        if isinstance(message, dict):
+            content = str(message.get("content") or "")
+        elif "choices" in data:
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                content = str(msg.get("content") or "")
+
+    content = content.replace("\r\n", "\n").strip()
+    try:
+        json_text = _extract_json_from_text(content)
+        parsed = json.loads(json_text)
+    except Exception:
+        parsed = {}
+
+    for k, v in list(parsed.items()):
+        if isinstance(v, str):
+            parsed[k] = v.replace("\r\n", " ").replace("\n", " ").strip()
+
+    return parsed
+
+
+def evaluate_answer_any(
+    record: Dict,
+    eval_model: str = EVAL_MODEL_NAME,
+    client: Optional[OpenAI] = None,
+    backend: str = "openai",
+    local_model: Optional[str] = None,
+    base_url: str = OLLAMA_BASE_URL,
+    timeout: int = 120,
+) -> Dict:
+    """
+    Bir QA kaydını seçilen backend ile değerlendir.
+
+    backend:
+      - "openai": OpenAI API ile değerlendir (varsayılan).
+      - "ollama": Yerel Ollama benzeri HTTP API ile değerlendir.
+    """
+    backend = (backend or "openai").lower()
+
+    if backend == "ollama":
+        model_name = local_model or QA_OLLAMA_MODEL
+        return _evaluate_answer_local(
+            record=record,
+            model=model_name,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    # Varsayılan: mevcut OpenAI tabanlı evaluate_answer fonksiyonunu kullan
+    return evaluate_answer(
+        record=record,
+        eval_model=eval_model,
+        client=client,
+    )
+
+
 def run_full_pipeline(
     csv_path: str,
     collection_name: str = DEFAULT_COLLECTION_NAME,
@@ -318,6 +452,8 @@ def run_full_pipeline(
     eval_model: str = EVAL_MODEL_NAME,
     k: int = 5,
     openai_client: Optional[OpenAI] = None,
+    eval_backend: str = "openai",
+    eval_local_model: Optional[str] = None,
 ) -> List[Dict]:
     """
     High-level helper:
@@ -334,7 +470,8 @@ def run_full_pipeline(
     collection = get_or_create_collection(client, name=collection_name)
     embedding_model = load_embedding_model()
 
-    if openai_client is None:
+    eval_backend = (eval_backend or "openai").lower()
+    if eval_backend == "openai" and openai_client is None:
         openai_client = get_openai_client()
 
     rows: List[Dict] = []
@@ -364,10 +501,12 @@ def run_full_pipeline(
             "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
         }
 
-        eval_row = evaluate_answer(
+        eval_row = evaluate_answer_any(
             record=record,
             eval_model=eval_model,
-            client=openai_client,
+            client=openai_client if eval_backend == "openai" else None,
+            backend=eval_backend,
+            local_model=eval_local_model,
         )
         rows.append(eval_row)
 
