@@ -84,10 +84,17 @@ def _list_ollama_models() -> List[str]:
 
 def _list_lmstudio_models() -> List[str]:
     """
-    Best-effort scan of LM Studio cache directory on macOS.
-    Looks under ~/.cache/lm-studio for model files.
+    Best-effort scan of LM Studio models directory on macOS.
+    Varsayılan olarak ~/.lmstudio/models altına bakar.
     """
-    base = Path.home() / ".cache" / "lm-studio"
+    # Tercih edilen dizini ortam değişkeniyle özelleştirebilme imkanı ver.
+    base_env = os.environ.get("LMSTUDIO_MODELS_DIR")
+    if base_env:
+        base = Path(base_env).expanduser()
+    else:
+        # LM Studio settings.json içindeki "downloadsFolder" ile uyumlu varsayılan.
+        base = Path.home() / ".lmstudio" / "models"
+
     if not base.exists():
         return []
 
@@ -172,25 +179,6 @@ def main() -> None:
                 help="Bu modeli RAG değerlendirmesine dahil et.",
             ):
                 qa_models_selected.append(model_name)
-
-        with st.expander("Yerel modeller (Ollama / LM Studio / Hugging Face)", expanded=False):
-            if ollama_models:
-                st.markdown("**Ollama modelleri**")
-                st.write(ollama_models)
-            else:
-                st.caption("Ollama modeli bulunamadı veya `ollama` komutu çalışmıyor.")
-
-            if lmstudio_models:
-                st.markdown("**LM Studio modelleri**")
-                st.write(lmstudio_models)
-            else:
-                st.caption("LM Studio cache dizininde model bulunamadı (`~/.cache/lm-studio`).")
-
-            if hf_models:
-                st.markdown("**Hugging Face cache modelleri**")
-                st.write(hf_models)
-            else:
-                st.caption("Hugging Face cache içinde model klasörü bulunamadı (`~/.cache/huggingface/hub`).")
 
         eval_model_name = st.text_input(
             "OpenAI değerlendirme modeli",
