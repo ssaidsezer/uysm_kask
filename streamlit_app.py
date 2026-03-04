@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -40,46 +41,27 @@ load_dotenv(WORKSPACE_DIR / ".env")
 
 def _list_ollama_models() -> List[str]:
     """
-    List models from `ollama list` if available.
+    List models directly from the Ollama HTTP API (/api/tags),
+    respecting the OLLAMA_HOST environment variable.
     """
+    host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+    if not host.startswith("http"):
+        host = f"http://{host}"
+    url = host.rstrip("/") + "/api/tags"
+
     try:
-        # Prefer JSON output if supported
-        result = subprocess.run(
-            ["ollama", "list", "--format", "json"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        import json
-
-        data = json.loads(result.stdout or "[]")
-        models = []
-        for item in data:
-            name = item.get("name")
-            if isinstance(name, str):
-                models.append(name)
-        return models
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
     except Exception:
-        # Fallback to plain-text parsing
-        try:
-            result = subprocess.run(
-                ["ollama", "list"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except Exception:
-            return []
+        return []
 
-        models: List[str] = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line or line.lower().startswith("name"):
-                continue
-            parts = line.split()
-            if parts:
-                models.append(parts[0])
-        return models
+    models: List[str] = []
+    for item in data.get("models", []):
+        name = item.get("name")
+        if isinstance(name, str):
+            models.append(name)
+    return models
 
 
 def _list_lmstudio_models() -> List[str]:
@@ -156,15 +138,11 @@ def main() -> None:
         chroma_dir = os.environ.get("CHROMA_DIR", DEFAULT_CHROMA_DIR)
         collection_name = os.environ.get("COLLECTION_NAME", DEFAULT_COLLECTION_NAME)
 
-        # Yerel modelleri tara (Ollama, LM Studio, Hugging Face cache)
-        with st.spinner("Yerel modeller taranıyor..."):
+        # Modelleri yalnızca uzak Ollama sunucusundan listele
+        with st.spinner("Ollama modelleri listeleniyor..."):
             ollama_models = _list_ollama_models()
-            lmstudio_models = _list_lmstudio_models()
-            hf_models = _list_hf_cache_models()
 
-        all_models: List[str] = sorted(
-            {m for m in (ollama_models + lmstudio_models + hf_models) if m}
-        )
+        all_models: List[str] = sorted({m for m in ollama_models if m})
         if not all_models:
             all_models = [QA_OLLAMA_MODEL]
 
