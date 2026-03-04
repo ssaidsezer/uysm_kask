@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -37,6 +38,85 @@ WORKSPACE_DIR = Path(__file__).resolve().parent
 load_dotenv(WORKSPACE_DIR / ".env")
 
 
+def _list_ollama_models() -> List[str]:
+    """
+    List models from `ollama list` if available.
+    """
+    try:
+        # Prefer JSON output if supported
+        result = subprocess.run(
+            ["ollama", "list", "--format", "json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        import json
+
+        data = json.loads(result.stdout or "[]")
+        models = []
+        for item in data:
+            name = item.get("name")
+            if isinstance(name, str):
+                models.append(name)
+        return models
+    except Exception:
+        # Fallback to plain-text parsing
+        try:
+            result = subprocess.run(
+                ["ollama", "list"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return []
+
+        models: List[str] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("name"):
+                continue
+            parts = line.split()
+            if parts:
+                models.append(parts[0])
+        return models
+
+
+def _list_lmstudio_models() -> List[str]:
+    """
+    Best-effort scan of LM Studio cache directory on macOS.
+    Looks under ~/.cache/lm-studio for model files.
+    """
+    base = Path.home() / ".cache" / "lm-studio"
+    if not base.exists():
+        return []
+
+    models: List[str] = []
+    for root, _, files in os.walk(base):
+        for fname in files:
+            if fname.lower().endswith((".gguf", ".bin", ".safetensors")):
+                rel = Path(root).joinpath(fname).relative_to(base)
+                models.append(str(rel))
+    return sorted(set(models))
+
+
+def _list_hf_cache_models() -> List[str]:
+    """
+    List cached Hugging Face models from ~/.cache/huggingface/hub.
+    """
+    base = Path.home() / ".cache" / "huggingface" / "hub"
+    if not base.exists():
+        return []
+
+    models: List[str] = []
+    prefix = "models--"
+    for entry in base.iterdir():
+        if entry.is_dir() and entry.name.startswith(prefix):
+            model_id = entry.name[len(prefix) :].replace("--", "/")
+            models.append(model_id)
+    return sorted(set(models))
+
+
 def _default_pdf_paths() -> List[Path]:
     candidates = [
         WORKSPACE_DIR / "askeri_egitim_kitabi.pdf",
@@ -64,44 +144,53 @@ def main() -> None:
     with st.sidebar:
         st.header("Ayarlar")
 
-        default_openai_key = os.environ.get("OPENAI_API_KEY", "")
+        # Bu üç ayar artık yalnızca ortam değişkenlerinden / kod sabitlerinden okunuyor.
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        chroma_dir = os.environ.get("CHROMA_DIR", DEFAULT_CHROMA_DIR)
+        collection_name = os.environ.get("COLLECTION_NAME", DEFAULT_COLLECTION_NAME)
 
-        openai_api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            value=default_openai_key,
-            help="Env değişkeninden (OPENAI_API_KEY) de okunabilir.",
+        # Yerel modelleri tara (Ollama, LM Studio, Hugging Face cache)
+        with st.spinner("Yerel modeller taranıyor..."):
+            ollama_models = _list_ollama_models()
+            lmstudio_models = _list_lmstudio_models()
+            hf_models = _list_hf_cache_models()
+
+        all_models: List[str] = sorted(
+            {m for m in (ollama_models + lmstudio_models + hf_models) if m}
         )
+        if not all_models:
+            all_models = [QA_OLLAMA_MODEL]
 
-        chroma_dir = st.text_input(
-            "Chroma dizini",
-            value=DEFAULT_CHROMA_DIR,
-            help="Yerel Chroma veritabanı için klasör.",
-        )
+        # Değerlendirilecek QA modelleri: tik'lemeli seçim listesi
+        st.markdown("**Değerlendirilecek QA modelleri**")
+        qa_models_selected: List[str] = []
+        for model_name in all_models:
+            if st.checkbox(
+                model_name,
+                value=True,
+                key=f"qa_model_select_{model_name}",
+                help="Bu modeli RAG değerlendirmesine dahil et.",
+            ):
+                qa_models_selected.append(model_name)
 
-        collection_name = st.text_input(
-            "Koleksiyon adı",
-            value=DEFAULT_COLLECTION_NAME,
-        )
+        with st.expander("Yerel modeller (Ollama / LM Studio / Hugging Face)", expanded=False):
+            if ollama_models:
+                st.markdown("**Ollama modelleri**")
+                st.write(ollama_models)
+            else:
+                st.caption("Ollama modeli bulunamadı veya `ollama` komutu çalışmıyor.")
 
-        qa_model_list_str = st.text_input(
-            "Ollama QA modelleri (virgülle ayır)",
-            value=QA_OLLAMA_MODEL,
-            help="Örn: qwen3:1.7b, qwen3:4b (Ollama'daki model etiketleri).",
-        )
+            if lmstudio_models:
+                st.markdown("**LM Studio modelleri**")
+                st.write(lmstudio_models)
+            else:
+                st.caption("LM Studio cache dizininde model bulunamadı (`~/.cache/lm-studio`).")
 
-        qa_model_candidates = [
-            m.strip() for m in qa_model_list_str.split(",") if m.strip()
-        ]
-        if not qa_model_candidates:
-            qa_model_candidates = [QA_OLLAMA_MODEL]
-
-        qa_models_selected = st.multiselect(
-            "Değerlendirilecek QA modelleri",
-            options=qa_model_candidates,
-            default=qa_model_candidates,
-            help="Aynı sorular için birden fazla modeli RAG'li ve RAG'siz karşılaştırmak için birden çok model seç.",
-        )
+            if hf_models:
+                st.markdown("**Hugging Face cache modelleri**")
+                st.write(hf_models)
+            else:
+                st.caption("Hugging Face cache içinde model klasörü bulunamadı (`~/.cache/huggingface/hub`).")
 
         eval_model_name = st.text_input(
             "OpenAI değerlendirme modeli",
@@ -223,15 +312,19 @@ def main() -> None:
 
             client = get_openai_client(api_key=openai_api_key or None)
 
-            with st.spinner("Pipeline çalışıyor (RAG + değerlendirme)..."):
-                rows = run_full_pipeline(
-                    csv_path=str(csv_path),
-                    collection_name=collection_name,
-                    chroma_dir=chroma_dir,
-                    eval_model=eval_model_name,
-                    k=int(k),
-                    openai_client=client,
-                )
+            try:
+                with st.spinner("Pipeline çalışıyor (RAG + değerlendirme)..."):
+                    rows = run_full_pipeline(
+                        csv_path=str(csv_path),
+                        collection_name=collection_name,
+                        chroma_dir=chroma_dir,
+                        eval_model=eval_model_name,
+                        k=int(k),
+                        openai_client=client,
+                    )
+            except Exception as exc:
+                st.error(f"Pipeline çalışırken bir hata oluştu ve işlem durduruldu: {exc}")
+                return
 
             if not rows:
                 st.warning("Hiç satır üretilmedi.")
@@ -322,31 +415,38 @@ def main() -> None:
                 cols = st.columns(2) if compare_no_rag else [st.container()]
 
                 # --- RAG'li cevap ---
-                with st.spinner(
-                    f"{qa_model_name} için RAG'li cevap üretiliyor ve değerlendiriliyor..."
-                ):
-                    rag_result = generate_rag_answer_ollama(
-                        question=question,
-                        context=context,
-                        model=qa_model_name,
-                    )
+                try:
+                    with st.spinner(
+                        f"{qa_model_name} için RAG'li cevap üretiliyor ve değerlendiriliyor..."
+                    ):
+                        rag_result = generate_rag_answer_ollama(
+                            question=question,
+                            context=context,
+                            model=qa_model_name,
+                        )
 
-                    rag_record = {
-                        "model": f"{qa_model_name} (RAG)",
-                        "question_index": 0,
-                        "question": question,
-                        "observation_idea": expected_answer or "",
-                        "model_answer": rag_result.get("answer", ""),
-                        "response_time_seconds": rag_result.get(
-                            "response_time_seconds", 0.0
-                        ),
-                    }
+                        rag_record = {
+                            "model": f"{qa_model_name} (RAG)",
+                            "question_index": 0,
+                            "question": question,
+                            "observation_idea": expected_answer or "",
+                            "model_answer": rag_result.get("answer", ""),
+                            "response_time_seconds": rag_result.get(
+                                "response_time_seconds", 0.0
+                            ),
+                        }
 
-                    rag_eval = evaluate_answer(
-                        record=rag_record,
-                        eval_model=eval_model_name,
-                        client=openai_client,
+                        rag_eval = evaluate_answer(
+                            record=rag_record,
+                            eval_model=eval_model_name,
+                            client=openai_client,
+                        )
+                except Exception as exc:
+                    st.error(
+                        f"{qa_model_name} için RAG'li çağrıda hata oluştu ve model atlandı: {exc}"
                     )
+                    # Bu model için hem RAG'li hem RAG'siz değerlendirmeyi atla
+                    continue
 
                 with cols[0]:
                     st.markdown("**RAG'li cevap (Ollama)**")
@@ -375,30 +475,36 @@ def main() -> None:
 
                 # --- RAG'siz cevap ---
                 if compare_no_rag:
-                    with st.spinner(
-                        f"{qa_model_name} için RAG'siz cevap üretiliyor ve değerlendiriliyor..."
-                    ):
-                        no_rag_result = generate_no_rag_answer_ollama(
-                            question=question,
-                            model=qa_model_name,
-                        )
+                    try:
+                        with st.spinner(
+                            f"{qa_model_name} için RAG'siz cevap üretiliyor ve değerlendiriliyor..."
+                        ):
+                            no_rag_result = generate_no_rag_answer_ollama(
+                                question=question,
+                                model=qa_model_name,
+                            )
 
-                        no_rag_record = {
-                            "model": f"{qa_model_name} (RAG'siz)",
-                            "question_index": 0,
-                            "question": question,
-                            "observation_idea": expected_answer or "",
-                            "model_answer": no_rag_result.get("answer", ""),
-                            "response_time_seconds": no_rag_result.get(
-                                "response_time_seconds", 0.0
-                            ),
-                        }
+                            no_rag_record = {
+                                "model": f"{qa_model_name} (RAG'siz)",
+                                "question_index": 0,
+                                "question": question,
+                                "observation_idea": expected_answer or "",
+                                "model_answer": no_rag_result.get("answer", ""),
+                                "response_time_seconds": no_rag_result.get(
+                                    "response_time_seconds", 0.0
+                                ),
+                            }
 
-                        no_rag_eval = evaluate_answer(
-                            record=no_rag_record,
-                            eval_model=eval_model_name,
-                            client=openai_client,
+                            no_rag_eval = evaluate_answer(
+                                record=no_rag_record,
+                                eval_model=eval_model_name,
+                                client=openai_client,
+                            )
+                    except Exception as exc:
+                        st.error(
+                            f"{qa_model_name} için RAG'siz çağrıda hata oluştu ve bu mod atlandı: {exc}"
                         )
+                        continue
 
                     with cols[1]:
                         st.markdown("**RAG'siz cevap (Ollama)**")
