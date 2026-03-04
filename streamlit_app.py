@@ -214,19 +214,21 @@ def main() -> None:
             help="Cevapları OpenAI ile mi yoksa yerel bir Ollama modeliyle mi değerlendireceğini seç.",
         )
 
-        eval_model_name = st.text_input(
-            "OpenAI değerlendirme modeli",
-            value=EVAL_MODEL_NAME,
-            help="Sadece OpenAI değerlendirme motoru seçiliyse kullanılır.",
-        )
-
+        # Değerlendirme motoruna göre sadece ilgili model alanını göster
         local_eval_model_name: str | None = None
-        if eval_backend == "Yerel (Ollama)":
+        if eval_backend == "OpenAI":
+            eval_model_name = st.text_input(
+                "OpenAI değerlendirme modeli",
+                value=EVAL_MODEL_NAME,
+                help="OpenAI değerlendirme motoru seçiliyse kullanılacak model.",
+            )
+        else:
+            eval_model_name = EVAL_MODEL_NAME
             local_eval_model_name = st.selectbox(
-                "Yerel eval modeli (Ollama)",
+                "Yerel değerlendirme modeli (Ollama)",
                 options=all_models,
                 index=0,
-                help="Eval için kullanılacak yerel modeli seç.",
+                help="Eval için kullanılacak yerel Ollama modelini seç.",
             )
 
     tab_index, tab_eval, tab_chat = st.tabs(
@@ -251,20 +253,9 @@ def main() -> None:
             accept_multiple_files=True,
         )
 
-        chunk_size = st.number_input(
-            "Chunk boyutu (karakter)",
-            min_value=200,
-            max_value=4000,
-            value=1000,
-            step=100,
-        )
-        chunk_overlap = st.number_input(
-            "Chunk overlap (karakter)",
-            min_value=0,
-            max_value=2000,
-            value=200,
-            step=50,
-        )
+        # Chunk ayarlarını artık sadece konfigürasyondan okuyalım (UI'da göstermiyoruz)
+        chunk_size = int(os.environ.get("CHUNK_SIZE", "1000"))
+        chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "200"))
 
         if st.button("İndeksi oluştur / güncelle"):
             pdf_paths: List[Path] = []
