@@ -31,7 +31,7 @@ from pipeline import (
     run_full_pipeline,
     write_results_to_csv,
 )
-from voice_utils import transcribe_audio, synthesize_speech
+from voice_utils import synthesize_speech
 
 
 def _list_ollama_models() -> tuple[List[str], str]:
@@ -638,44 +638,11 @@ def main() -> None:
 
     # ── 4th Tab: Sesli Değerlendirme (Voice) ──────────────────────────
     with tab_voice:
-        st.subheader("Sesli Değerlendirme (STT + RAG + TTS)")
+        st.subheader("Sesli Değerlendirme (RAG + TTS)")
 
-        # --- Section 1: Audio Input ---
-        col_mic, col_upload = st.columns(2)
-        with col_mic:
-            mic_audio = st.audio_input("Mikrofondan kaydet")
-        with col_upload:
-            uploaded_audio = st.file_uploader(
-                "Ses dosyası yükle",
-                type=["wav", "mp3", "m4a", "ogg", "flac", "webm"],
-                key="voice_file_uploader",
-            )
-
-        # Prefer mic recording if both provided
-        audio_source = mic_audio or uploaded_audio
-        if audio_source:
-            st.audio(audio_source)
-
-        # --- Section 2: STT Transcription ---
-        if "voice_transcription" not in st.session_state:
-            st.session_state["voice_transcription"] = ""
-
-        if st.button("Metne Çevir", key="voice_stt_btn"):
-            if not audio_source:
-                st.error("Lütfen önce bir ses kaydı yapın veya dosya yükleyin.")
-            else:
-                audio_bytes = audio_source.getvalue()
-                with st.spinner("Ses metne çevriliyor (ilk çalıştırmada model indirilecek)..."):
-                    import time as _t
-                    _t0 = _t.time()
-                    text = transcribe_audio(audio_bytes)
-                    elapsed = _t.time() - _t0
-                st.session_state["voice_transcription"] = text
-                st.success(f"Transkripsiyon tamamlandı ({elapsed:.1f}s)")
-
+        # --- Section 1: Soru Metni ---
         transcription = st.text_area(
-            "Algılanan metin (düzenleyebilirsiniz)",
-            value=st.session_state.get("voice_transcription", ""),
+            "Sorunuzu yazın",
             height=120,
             key="voice_transcription_area",
         )
@@ -705,7 +672,7 @@ def main() -> None:
         if st.button("Soruyu Değerlendir", key="voice_eval_btn"):
             q = transcription.strip() # type: ignore
             if not q:
-                st.error("Lütfen önce bir soru metni oluşturun (STT veya elle yazın).")
+                st.error("Lütfen bir soru yazın.")
             else:
                 answers = _run_chat_eval(
                     question=q,
