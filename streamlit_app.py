@@ -87,7 +87,6 @@ def _run_chat_eval(
     eval_model_name: str,
     local_eval_model_name: str | None,
     openai_api_key: str,
-    chroma_dir: str,
     collection_name: str,
 ) -> List[dict]:
     """Run RAG (and optionally no-RAG) QA + evaluation for given models.
@@ -95,8 +94,6 @@ def _run_chat_eval(
     Displays results via Streamlit and appends to session state.
     Returns list of result dicts containing 'model_answer' for TTS.
     """
-    from rag_index import retrieve_context
-
     if eval_backend == "OpenAI":
         if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
             st.error(
@@ -108,14 +105,9 @@ def _run_chat_eval(
     else:
         openai_client = None
 
-    client = get_chroma_client(persist_directory=chroma_dir)
-    collection = get_or_create_collection(client, name=collection_name)
-    embedding_model = load_embedding_model()
-
     context = retrieve_context(
         question=question,
-        collection=collection,
-        embedding_model=embedding_model,
+        collection_name=collection_name,
         k=int(k),
     )
 
@@ -616,7 +608,6 @@ def main() -> None:
                 eval_model_name=eval_model_name,
                 local_eval_model_name=local_eval_model_name,
                 openai_api_key=openai_api_key,
-                chroma_dir=chroma_dir,
                 collection_name=collection_name,
             )
 
@@ -685,7 +676,6 @@ def main() -> None:
                     eval_model_name=eval_model_name,
                     local_eval_model_name=local_eval_model_name,
                     openai_api_key=openai_api_key,
-                    chroma_dir=chroma_dir,
                     collection_name=collection_name,
                 )
 
