@@ -1,10 +1,6 @@
 fastapi
 uvicorn[standard]
-qdrant-client
-sentence-transformers
-pypdf
 transformers
 accelerate
-librosa
 scipy
 numpy<2
