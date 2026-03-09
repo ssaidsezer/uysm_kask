@@ -1,26 +1,27 @@
 version: "3.9"
 
 services:
-  rag-api:
-    image: python:3.11-slim
-    container_name: rag-api
+  tts-api:
+    build: .
+    container_name: tts-api
     working_dir: /app
-    volumes:
-      - ./app:/app       # FastAPI kodunu bu klasöre koy (ör. app/main.py)
     environment:
-      # Qdrant uzak sunucu
-      QDRANT_URL: "http://192.168.0.149:6333"
-      # Uzak Ollama (eval + cevap üretimi için)
-      OLLAMA_BASE_URL: "http://192.168.1.151:11434"
-      # Embedding modeli
-      EMBEDDING_MODEL_NAME: "trmteb/turkish-embedding-model"
-      # (gerekiyorsa) OpenAI için
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      # Varsayılan TTS modeli (istekle override edilebilir)
+      TTS_MODEL: "facebook/mms-tts-tur"
+      # HuggingFace model cache (volume'a bağlı — container yeniden başlayınca model tekrar inmez)
+      HF_HOME: "/app/hf_cache"
     ports:
-      - "8000:8000"      # FastAPI'ye dışarıdan erişim
-    command: >
-      sh -c "
-        pip install --no-cache-dir fastapi uvicorn[standard] qdrant-client sentence-transformers pypdf &&
-        uvicorn main:app --host 0.0.0.0 --port 8000
-      "
+      - "8000:8000"
+    volumes:
+      - hf_cache:/app/hf_cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
     restart: unless-stopped
+
+volumes:
+  hf_cache:
