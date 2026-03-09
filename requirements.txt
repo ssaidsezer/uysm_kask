@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.27.0
 openai>=1.0.0
 qdrant-client
 pypdf
@@ -6,3 +6,8 @@ pandas
 requests
 python-dotenv
 numpy<2
+torch
+transformers
+accelerate
+librosa
+scipy
