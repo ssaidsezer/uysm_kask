@@ -14,7 +14,7 @@ COPY requirements-server.txt .
 
 # Base image'daki conda torch'u pip'e kaydet, sonra diğer paketleri kur
 RUN pip install --no-cache-dir torch==$(python -c "import torch; print(torch.__version__.split('+')[0])")+cu121 \
-        --index-url https://download.pytorch.org/whl/cu121 \
+    --index-url https://download.pytorch.org/whl/cu121 \
     && pip install --no-cache-dir -r requirements-server.txt \
     && python -c "import torch; print('torch OK:', torch.__version__)"
 
