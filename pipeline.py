@@ -11,16 +11,14 @@ from openai import OpenAI
 
 from rag_index import (
     DEFAULT_COLLECTION_NAME,
-    DEFAULT_CHROMA_DIR,
-    get_chroma_client,
-    get_or_create_collection,
-    load_embedding_model,
+    QDRANT_URL,
+    get_qdrant_client,
     retrieve_context,
 )
 
 
 QA_OLLAMA_MODEL = os.getenv("QA_OLLAMA_MODEL", "qwen3:1.7b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
 EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4o-mini")
 
 
@@ -85,6 +83,11 @@ def generate_rag_answer_ollama(
       - response_time_seconds: float
     """
     prompt = _build_rag_prompt(question, context)
+    if not base_url:
+        raise ValueError(
+            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
+        )
     t0 = time.time()
 
     resp = requests.post(
@@ -172,6 +175,11 @@ def generate_no_rag_answer_ollama(
       - response_time_seconds: float
     """
     prompt = _build_no_rag_prompt(question)
+    if not base_url:
+        raise ValueError(
+            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
+        )
     t0 = time.time()
 
     resp = requests.post(
@@ -368,6 +376,12 @@ def _evaluate_answer_local(
         + "\n\nYukarıdaki talimatlara göre SADECE geçerli bir JSON nesnesi üret."
     )
 
+    if not base_url:
+        raise ValueError(
+            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin."
+        )
+
     resp = requests.post(
         f"{base_url.rstrip('/')}/api/chat",
         json={
@@ -448,7 +462,7 @@ def evaluate_answer_any(
 def run_full_pipeline(
     csv_path: str,
     collection_name: str = DEFAULT_COLLECTION_NAME,
-    chroma_dir: str = DEFAULT_CHROMA_DIR,
+    qdrant_url: str = QDRANT_URL,
     eval_model: str = EVAL_MODEL_NAME,
     k: int = 5,
     openai_client: Optional[OpenAI] = None,
@@ -458,17 +472,13 @@ def run_full_pipeline(
     """
     High-level helper:
       - Load questions from CSV.
-      - For each question, retrieve context from Chroma.
-      - Ask Ollama (Qwen3 1.7B or configured model) for an answer.
-      - Evaluate the answer with OpenAI and return flat dict rows.
+      - For each question, retrieve context from Qdrant (via Ollama embeddings).
+      - Ask Ollama for an answer.
+      - Evaluate the answer and return flat dict rows.
     """
     questions = load_questions(csv_path)
     if not questions:
         return []
-
-    client = get_chroma_client(persist_directory=chroma_dir)
-    collection = get_or_create_collection(client, name=collection_name)
-    embedding_model = load_embedding_model()
 
     eval_backend = (eval_backend or "openai").lower()
     if eval_backend == "openai" and openai_client is None:
@@ -482,9 +492,9 @@ def run_full_pipeline(
 
         context = retrieve_context(
             question=question,
-            collection=collection,
-            embedding_model=embedding_model,
+            collection_name=collection_name,
             k=k,
+            qdrant_url=qdrant_url,
         )
 
         rag_result = generate_rag_answer_ollama(
@@ -574,6 +584,7 @@ if __name__ == "__main__":
         csv_path=args.csv_path,
         k=args.k,
         openai_client=client,
+        qdrant_url=QDRANT_URL,
     )
     written = write_results_to_csv(rows_, args.output_path)
     print(f"Wrote {written} rows to {args.output_path}")

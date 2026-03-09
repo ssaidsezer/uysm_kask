@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import io
 import os
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -12,21 +11,20 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 
-# Reduce noisy HF tokenizers parallelism warnings
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+WORKSPACE_DIR = Path(__file__).resolve().parent
+load_dotenv(WORKSPACE_DIR / ".env", override=True)
 
 from rag_index import (
-    DEFAULT_CHROMA_DIR,
     DEFAULT_COLLECTION_NAME,
+    QDRANT_URL,
     index_pdfs,
-    load_embedding_model,
-    get_chroma_client,
-    get_or_create_collection,
+    retrieve_context,
 )
 from pipeline import (
     QA_OLLAMA_MODEL,
     EVAL_MODEL_NAME,
     evaluate_answer,
+    evaluate_answer_any,
     generate_rag_answer_ollama,
     generate_no_rag_answer_ollama,
     get_openai_client,
@@ -35,16 +33,15 @@ from pipeline import (
 )
 
 
-WORKSPACE_DIR = Path(__file__).resolve().parent
-load_dotenv(WORKSPACE_DIR / ".env")
-
-
-def _list_ollama_models() -> List[str]:
+def _list_ollama_models() -> tuple[List[str], str]:
     """
-    List models directly from the Ollama HTTP API (/api/tags),
-    respecting the OLLAMA_HOST environment variable.
+    List models from the remote Ollama HTTP API (/api/tags).
+    OLLAMA_HOST must be set in .env — no localhost fallback.
     """
-    host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+    host = os.environ.get("OLLAMA_HOST", "")
+    if not host:
+        return [], "OLLAMA_HOST ortam değişkeni tanımlı değil. Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_HOST=192.168.1.151:11434)."
+
     if not host.startswith("http"):
         host = f"http://{host}"
     url = host.rstrip("/") + "/api/tags"
@@ -54,56 +51,14 @@ def _list_ollama_models() -> List[str]:
         resp.raise_for_status()
         data = resp.json() or {}
     except Exception:
-        return []
+        return [], f"Uzak Ollama sunucusuna ({host}) bağlanılamadı. Lütfen sunucunun açık olduğundan ve ağ/güvenlik duvarı ayarlarının yapıldığından emin olun."
 
     models: List[str] = []
     for item in data.get("models", []):
         name = item.get("name")
         if isinstance(name, str):
             models.append(name)
-    return models
-
-
-def _list_lmstudio_models() -> List[str]:
-    """
-    Best-effort scan of LM Studio models directory on macOS.
-    Varsayılan olarak ~/.lmstudio/models altına bakar.
-    """
-    # Tercih edilen dizini ortam değişkeniyle özelleştirebilme imkanı ver.
-    base_env = os.environ.get("LMSTUDIO_MODELS_DIR")
-    if base_env:
-        base = Path(base_env).expanduser()
-    else:
-        # LM Studio settings.json içindeki "downloadsFolder" ile uyumlu varsayılan.
-        base = Path.home() / ".lmstudio" / "models"
-
-    if not base.exists():
-        return []
-
-    models: List[str] = []
-    for root, _, files in os.walk(base):
-        for fname in files:
-            if fname.lower().endswith((".gguf", ".bin", ".safetensors")):
-                rel = Path(root).joinpath(fname).relative_to(base)
-                models.append(str(rel))
-    return sorted(set(models))
-
-
-def _list_hf_cache_models() -> List[str]:
-    """
-    List cached Hugging Face models from ~/.cache/huggingface/hub.
-    """
-    base = Path.home() / ".cache" / "huggingface" / "hub"
-    if not base.exists():
-        return []
-
-    models: List[str] = []
-    prefix = "models--"
-    for entry in base.iterdir():
-        if entry.is_dir() and entry.name.startswith(prefix):
-            model_id = entry.name[len(prefix) :].replace("--", "/")
-            models.append(model_id)
-    return sorted(set(models))
+    return models, ""
 
 
 def _default_pdf_paths() -> List[Path]:
@@ -126,27 +81,52 @@ def main() -> None:
     st.title("RAG + Değerlendirme Pipeline")
     st.write(
         "PDF tabanlı Türkçe RAG sistemi: "
-        "PDF'leri Chroma'ya indeksle, CSV'den soruları değerlendir, "
-        "cevapları Ollama (Qwen3) ile üret ve OpenAI ile puanla."
+        "PDF'leri Qdrant'a indeksle (Ollama embedding ile), CSV'den soruları değerlendir, "
+        "cevapları Ollama ile üret ve değerlendir."
     )
 
     with st.sidebar:
         st.header("Ayarlar")
 
-        # Bu üç ayar artık yalnızca ortam değişkenlerinden / kod sabitlerinden okunuyor.
         openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-        chroma_dir = os.environ.get("CHROMA_DIR", DEFAULT_CHROMA_DIR)
-        collection_name = os.environ.get("COLLECTION_NAME", DEFAULT_COLLECTION_NAME)
+        qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+        collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
+
+        # Bağlantı durumu göstergesi
+        st.markdown("---")
+        st.markdown("**Bağlantı Durumu**")
+        # Qdrant
+        try:
+            resp = requests.get(f"{qdrant_url}/collections", timeout=5)
+            resp.raise_for_status()
+            st.success(f"✅ Qdrant bağlı ({qdrant_url})")
+        except Exception:
+            st.error(f"❌ Qdrant erişilemiyor ({qdrant_url})")
+
+        # Ollama
+        ollama_base = os.environ.get("OLLAMA_BASE_URL", "")
+        if ollama_base:
+            try:
+                resp = requests.get(f"{ollama_base.rstrip('/')}/api/tags", timeout=5)
+                resp.raise_for_status()
+                st.success(f"✅ Ollama bağlı ({ollama_base})")
+            except Exception:
+                st.error(f"❌ Ollama erişilemiyor ({ollama_base})")
+        st.markdown("---")
 
         # Modelleri yalnızca uzak Ollama sunucusundan listele
         with st.spinner("Ollama modelleri listeleniyor..."):
-            ollama_models = _list_ollama_models()
+            ollama_models, connection_error = _list_ollama_models()
 
-        all_models: List[str] = sorted({m for m in ollama_models if m})
-        if not all_models:
-            all_models = [QA_OLLAMA_MODEL]
+        if connection_error:
+            st.error(connection_error)
+            all_models = []
+        else:
+            all_models: List[str] = sorted({m for m in ollama_models if m})
+            if not all_models:
+                st.warning("Ollama sunucusuna bağlanıldı ancak herhangi bir model bulunamadı.")
 
-        # Değerlendirilecek QA modelleri: arama kutulu ve açılır-kapanır seçim listesi
+        # Değerlendirilecek QA modelleri
         st.markdown("**Değerlendirilecek QA modelleri**")
 
         qa_models_selected: List[str] = []
@@ -192,7 +172,6 @@ def main() -> None:
             help="Cevapları OpenAI ile mi yoksa yerel bir Ollama modeliyle mi değerlendireceğini seç.",
         )
 
-        # Değerlendirme motoruna göre sadece ilgili model alanını göster
         local_eval_model_name: str | None = None
         if eval_backend == "OpenAI":
             eval_model_name = st.text_input(
@@ -204,7 +183,7 @@ def main() -> None:
             eval_model_name = EVAL_MODEL_NAME
             local_eval_model_name = st.selectbox(
                 "Yerel değerlendirme modeli (Ollama)",
-                options=all_models,
+                options=all_models if all_models else ["Bağlantı hatası/Model Yok"],
                 index=0,
                 help="Eval için kullanılacak yerel Ollama modelini seç.",
             )
@@ -213,8 +192,11 @@ def main() -> None:
         ["📚 PDF İndeksleme", "📊 CSV Değerlendirme", "💬 Manuel Chat Eval"]
     )
 
+    # =========================================================================
+    # TAB 1: PDF İndeksleme (Qdrant + Ollama Embedding)
+    # =========================================================================
     with tab_index:
-        st.subheader("PDF'leri Chroma'ya indeksle")
+        st.subheader("PDF'leri Qdrant'a indeksle (Ollama Embedding)")
 
         default_pdfs = _default_pdf_paths()
         use_default = False
@@ -231,9 +213,11 @@ def main() -> None:
             accept_multiple_files=True,
         )
 
-        # Chunk ayarlarını artık sadece konfigürasyondan okuyalım (UI'da göstermiyoruz)
         chunk_size = int(os.environ.get("CHUNK_SIZE", "1000"))
         chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "200"))
+
+        embed_model_name = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        st.info(f"Embedding modeli: **{embed_model_name}** (Ollama) | Koleksiyon: **{collection_name}** | Qdrant: **{qdrant_url}**")
 
         if st.button("İndeksi oluştur / güncelle"):
             pdf_paths: List[Path] = []
@@ -252,24 +236,66 @@ def main() -> None:
             if not pdf_paths:
                 st.error("İndekslenecek PDF bulunamadı.")
             else:
-                with st.spinner("Embedding modeli yükleniyor..."):
-                    embedding_model = load_embedding_model()
+                try:
+                    progress_bar = st.progress(0, text="Hazırlanıyor...")
+                    status_text = st.empty()
 
-                client = get_chroma_client(persist_directory=chroma_dir)
-                collection = get_or_create_collection(client, name=collection_name)
+                    phase_labels = {
+                        "pdf_extract": "📄 PDF'ler okunuyor",
+                        "ollama_embed": "🧠 Ollama embedding hesaplanıyor",
+                        "qdrant_upsert": "💾 Qdrant'a yazılıyor",
+                    }
+                    # Ağırlıklar: embedding en uzun süren, ona en çok pay ver
+                    phase_weights = {
+                        "pdf_extract": 0.10,
+                        "ollama_embed": 0.70,
+                        "qdrant_upsert": 0.20,
+                    }
+                    phase_starts = {
+                        "pdf_extract": 0.0,
+                        "ollama_embed": 0.10,
+                        "qdrant_upsert": 0.80,
+                    }
 
-                with st.spinner("PDF'ler indeksleniyor..."):
-                    total_chunks = index_pdfs(
+                    def on_progress(phase, current, total, elapsed_sec):
+                        if total <= 0:
+                            return
+                        label = phase_labels.get(phase, phase)
+                        pct_in_phase = current / total
+                        overall = phase_starts.get(phase, 0) + phase_weights.get(phase, 0) * pct_in_phase
+                        overall = min(overall, 1.0)
+                        progress_bar.progress(overall, text=f"{label}  ({current}/{total})  ⏱ {elapsed_sec:.1f}s")
+                        status_text.caption(f"{label}: {current}/{total} — {elapsed_sec:.1f} saniye")
+
+                    result = index_pdfs(
                         [str(p) for p in pdf_paths],
-                        collection=collection,
-                        embedding_model=embedding_model,
-                        chunk_size=int(chunk_size),
-                        chunk_overlap=int(chunk_overlap),
+                        collection_name=collection_name,
+                        chunk_size=chunk_size,
+                        chunk_overlap=chunk_overlap,
+                        qdrant_url=qdrant_url,
+                        progress_callback=on_progress,
                     )
 
-                st.success(f"İndeksleme tamamlandı. Toplam chunk sayısı: {total_chunks}.")
-                st.write("Koleksiyon:", collection_name)
+                    progress_bar.progress(1.0, text="✅ Tamamlandı!")
+                    status_text.empty()
 
+                    st.success(f"İndeksleme tamamlandı! Toplam **{result['total_chunks']}** chunk indekslendi.")
+
+                    # Zamanlama tablosu
+                    st.markdown("#### ⏱ Süre Detayları")
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("📄 PDF Okuma", f"{result['pdf_extract_sec']}s")
+                    col2.metric("🧠 Ollama Embed", f"{result['ollama_embed_sec']}s")
+                    col3.metric("💾 Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
+                    col4.metric("⏱ Toplam", f"{result['total_sec']}s")
+
+                    st.write("Koleksiyon:", collection_name)
+                except Exception as exc:
+                    st.error(f"İndeksleme sırasında hata oluştu: {exc}")
+
+    # =========================================================================
+    # TAB 2: CSV Değerlendirme
+    # =========================================================================
     with tab_eval:
         st.subheader("CSV'den soruları değerlendir")
 
@@ -310,7 +336,7 @@ def main() -> None:
             if eval_backend == "OpenAI":
                 if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
                     st.error(
-                        "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli (sidebar'dan girin veya ortam değişkeni ayarlayın)."
+                        "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli."
                     )
                     return
                 client = get_openai_client(api_key=openai_api_key or None)
@@ -322,7 +348,7 @@ def main() -> None:
                     rows = run_full_pipeline(
                         csv_path=str(csv_path),
                         collection_name=collection_name,
-                        chroma_dir=chroma_dir,
+                        qdrant_url=qdrant_url,
                         eval_model=eval_model_name,
                         k=int(k),
                         openai_client=client,
@@ -341,7 +367,7 @@ def main() -> None:
             st.dataframe(rows)
 
             output_csv = io.StringIO()
-            _ = write_results_to_csv(rows, output_path=output_csv)  # type: ignore[arg-type]
+            _ = write_results_to_csv(rows, output_path=output_csv)
 
             csv_bytes = output_csv.getvalue().encode("utf-8")
             st.download_button(
@@ -351,6 +377,9 @@ def main() -> None:
                 mime="text/csv",
             )
 
+    # =========================================================================
+    # TAB 3: Manuel Chat Eval
+    # =========================================================================
     with tab_chat:
         st.subheader("Manuel soru sor ve RAG vs RAG'siz karşılaştır")
 
@@ -389,32 +418,24 @@ def main() -> None:
             if eval_backend == "OpenAI":
                 if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
                     st.error(
-                        "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli (sidebar'dan girin veya ortam değişkeni ayarlayın)."
+                        "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli."
                     )
                     return
                 openai_client = get_openai_client(api_key=openai_api_key or None)
             else:
                 openai_client = None
 
-            # Hazır bir Chroma koleksiyonu ve embedding modeli yükle
-            client = get_chroma_client(persist_directory=chroma_dir)
-            collection = get_or_create_collection(client, name=collection_name)
-            embedding_model = load_embedding_model()
-
-            # Ortak RAG context'ini bir kez hesapla
+            # Qdrant'tan RAG context'ini al
             context = ""
             try:
-                from rag_index import retrieve_context  # local import to avoid cycle
-            except Exception:
-                retrieve_context = None  # type: ignore[assignment]
-
-            if retrieve_context is not None:
                 context = retrieve_context(
                     question=question,
-                    collection=collection,
-                    embedding_model=embedding_model,
+                    collection_name=collection_name,
                     k=int(k_chat),
+                    qdrant_url=qdrant_url,
                 )
+            except Exception as exc:
+                st.warning(f"Context alınırken hata: {exc}. RAG'siz devam ediliyor.")
 
             run_timestamp = datetime.utcnow().isoformat()
             selected_models = qa_models_selected or all_models
@@ -458,16 +479,14 @@ def main() -> None:
                     st.error(
                         f"{qa_model_name} için RAG'li çağrıda hata oluştu ve model atlandı: {exc}"
                     )
-                    # Bu model için hem RAG'li hem RAG'siz değerlendirmeyi atla
                     continue
 
                 with cols[0]:
                     st.markdown("**RAG'li cevap (Ollama)**")
                     st.write(rag_record["model_answer"])
-                    st.markdown("**RAG'li cevap eval (OpenAI)**")
+                    st.markdown("**RAG'li cevap eval**")
                     st.json(rag_eval)
 
-                # RAG'li satırı CSV loguna ekle
                 st.session_state["chat_eval_rows"].append(
                     {
                         "timestamp": run_timestamp,
@@ -526,10 +545,9 @@ def main() -> None:
                     with cols[1]:
                         st.markdown("**RAG'siz cevap (Ollama)**")
                         st.write(no_rag_record["model_answer"])
-                        st.markdown("**RAG'siz cevap eval (OpenAI)**")
+                        st.markdown("**RAG'siz cevap eval**")
                         st.json(no_rag_eval)
 
-                    # RAG'siz satırı CSV loguna ekle
                     st.session_state["chat_eval_rows"].append(
                         {
                             "timestamp": run_timestamp,
@@ -572,4 +590,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

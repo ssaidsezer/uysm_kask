@@ -1,7 +1,6 @@
 streamlit
 openai>=1.0.0
-chromadb
-sentence-transformers
+qdrant-client
 pypdf
 pandas
 requests
