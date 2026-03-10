@@ -10,23 +10,38 @@ Yapılandırma:
 from __future__ import annotations
 
 import os
-from typing import Tuple
+from typing import List, Tuple
 
 import requests
 
-VOICE_API_URL: str = os.getenv("VOICE_API_URL", "http://localhost:8000")
-TTS_MODEL: str = os.getenv("TTS_MODEL", "facebook/mms-tts-tur")
+VOICE_API_URL = os.environ.get("VOICE_API_URL", "").strip()
+if not VOICE_API_URL:
+    VOICE_API_URL = "http://localhost:8000"
+
+TTS_MODEL = os.environ.get("TTS_MODEL", "facebook/mms-tts-tur")
+
+def get_downloaded_tts_models() -> List[str]:
+    """Uzak sunucuda hâlihazırda indirilmiş ve hazır olan HuggingFace TTS modellerini listeler."""
+    try:
+        url = f"{VOICE_API_URL.rstrip('/')}/models"
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("downloaded_models", [])
+    except Exception:
+        return []
 
 # MMS-TTS-TUR her zaman 16 kHz çıktı üretir
 _TTS_SAMPLE_RATE = 16_000
 
 
-def synthesize_speech(text: str, model: str = TTS_MODEL) -> Tuple[bytes, int]:
-    """Metni uzak VITS modeliyle WAV'a dönüştür."""
+def synthesize_speech(text: str, model: str = TTS_MODEL) -> Tuple[bytes, int, float]:
+    """Metni uzak VITS modeliyle WAV'a dönüştür, sesi ve saniye cinsinden süreyi döndür."""
     url = f"{VOICE_API_URL.rstrip('/')}/tts"
     resp = requests.post(url, json={"text": text, "model": model}, timeout=180)
     resp.raise_for_status()
-    return resp.content, _TTS_SAMPLE_RATE
+    duration_sec = float(resp.headers.get("X-Audio-Duration", "0.0"))
+    return resp.content, _TTS_SAMPLE_RATE, duration_sec
 
 
 def transcribe_audio(audio_bytes: bytes) -> str:

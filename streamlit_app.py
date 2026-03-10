@@ -31,7 +31,7 @@ from pipeline import (
     run_full_pipeline,
     write_results_to_csv,
 )
-from voice_utils import synthesize_speech
+from voice_utils import synthesize_speech, get_downloaded_tts_models
 
 
 def _list_ollama_models() -> tuple[List[str], str]:
@@ -627,78 +627,106 @@ def main() -> None:
                 mime="text/csv",
             )
 
-    # ── 4th Tab: Sesli Değerlendirme (Voice) ──────────────────────────
+    # ── 4th Tab: Sesli Değerlendirme ( Voice ) ──────────────────────────
     with tab_voice:
-        st.subheader("Sesli Değerlendirme (RAG + TTS)")
+        st.subheader("Sesli Sentezleme (Sadece TTS)")
+        st.write("Bu bölümde yazdığınız veya CSV ile yüklediğiniz metinler doğrudan uzak sunucudaki model ile sese dönüştürülür. LLM veya RAG kullanılmaz.")
+
+        # Uzak sunucuda indirili modelleri çek
+        with st.spinner("İndirili TTS modelleri kontrol ediliyor..."):
+            downloaded_models = get_downloaded_tts_models()
+        
+        default_model = "facebook/mms-tts-tur"
+        model_options = downloaded_models.copy()
+        if default_model not in model_options:
+            model_options.insert(0, default_model)
+            
+        custom_option = "🌍 Yeni Model Adı Gireceğim..."
+        if custom_option not in model_options:
+            model_options.append(custom_option)
+
+        selected_option = st.selectbox(
+            "TTS Modeli Seçin",
+            options=model_options,
+            help="Sesi sentezlemek için kullanılacak modeli seçin veya yenisini indirmek için 'Yeni Model' seçeneğini kullanın."
+        )
+
+        if selected_option == custom_option:
+            tts_model_selected = st.text_input("Yeni HuggingFace Model Adını Yazın (örn: facebook/mms-tts-eng):", value="microsoft/speecht5_tts").strip()
+        else:
+            tts_model_selected = selected_option
+
+        st.markdown("---")
+        st.markdown("### 📄 Toplu CSV'den Metin Okuma")
+        
+        uploaded_voice_csv = st.file_uploader(
+            "Metin CSV'si Yükle (Sadece tek sütun ve sadece metinler içermelidir)",
+            type=["csv"],
+            key="voice_csv_upload"
+        )
+
+        if st.button("Toplu CSV'yi İşle ve Sese Çevir", key="voice_csv_btn"):
+            if not uploaded_voice_csv:
+                st.error("Lütfen bir CSV dosyası yükleyin.")
+            else:
+                try:
+                    stringio = io.StringIO(uploaded_voice_csv.getvalue().decode("utf-8"))
+                    reader = csv.reader(stringio)
+                    texts_to_read = []
+                    for row in reader:
+                        if row and row[0].strip():
+                            texts_to_read.append(row[0].strip())
+                    
+                    if not texts_to_read:
+                        st.warning("CSV dosyasında geçerli bir metin bulunamadı.")
+                    else:
+                        st.success(f"Toplam {len(texts_to_read)} adet metin bulundu. Sesli yanıtlar üretiliyor...")
+                        for idx, text_content in enumerate(texts_to_read):
+                            st.markdown(f"#### 🟡 Metin {idx + 1}: {text_content}")
+                            with st.spinner(f"Metin {tts_model_selected} ile sese çevriliyor..."):
+                                wav_bytes, sr, duration_sec = synthesize_speech(text_content, model=tts_model_selected)
+                            
+                            st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Model:** {tts_model_selected}")
+                            st.audio(wav_bytes, format="audio/wav")
+                            st.download_button(
+                                f"İndir — Metin {idx+1}",
+                                data=wav_bytes,
+                                file_name=f"ses_metin_{idx+1}.wav",
+                                mime="audio/wav",
+                                key=f"voice_bulk_dl_{idx}",
+                            )
+                            st.markdown("---")
+                except Exception as e:
+                    st.error(f"CSV işlenirken bir hata oluştu: {e}")
+
+        st.markdown("### ✍️ Manuel Metin Okuma")
 
         # --- Section 1: Soru Metni ---
         transcription = st.text_area(
-            "Sorunuzu yazın",
+            "Okunacak metni yazın",
             height=120,
             key="voice_transcription_area",
         )
 
-        # --- Section 3: RAG Pipeline ---
-        voice_expected = st.text_area(
-            "İsteğe bağlı: Beklenen / referans cevap",
-            placeholder="Eval sırasında kıyaslamak için isteğe bağlı olarak doğru cevabı yazabilirsin.",
-            height=100,
-            key="voice_expected_answer",
-        )
-
-        voice_compare_no_rag = st.toggle(
-            "RAG'siz cevabı da üret",
-            value=False,
-            key="voice_no_rag_toggle",
-        )
-
-        voice_k = st.number_input(
-            "RAG chunk sayısı (k)",
-            min_value=1,
-            max_value=20,
-            value=5,
-            key="voice_k",
-        )
-
-        if st.button("Soruyu Değerlendir", key="voice_eval_btn"):
+        if st.button("Sesi Üret (Sentezle)", key="voice_eval_btn"):
             q = transcription.strip() # type: ignore
             if not q:
-                st.error("Lütfen bir soru yazın.")
+                st.error("Lütfen bir metin yazın.")
             else:
-                answers = _run_chat_eval(
-                    question=q,
-                    expected_answer=voice_expected,
-                    compare_no_rag=voice_compare_no_rag,
-                    k=voice_k,
-                    qa_models_selected=qa_models_selected,
-                    all_models=all_models,
-                    eval_backend=eval_backend,
-                    eval_model_name=eval_model_name,
-                    local_eval_model_name=local_eval_model_name,
-                    openai_api_key=openai_api_key,
-                    collection_name=collection_name,
+                st.markdown("---")
+                st.markdown("### 🔊 Sesli Çıktı (TTS)")
+                with st.spinner(f"Metin {tts_model_selected} ile sese çevriliyor..."):
+                    wav_bytes, sr, duration_sec = synthesize_speech(q, model=tts_model_selected)
+                
+                st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye")
+                st.audio(wav_bytes, format="audio/wav")
+                st.download_button(
+                    "Sesi İndir",
+                    data=wav_bytes,
+                    file_name="manuel_ses.wav",
+                    mime="audio/wav",
+                    key="voice_manuel_dl",
                 )
-
-                # --- Section 4: TTS Output ---
-                if answers:
-                    st.markdown("---")
-                    st.markdown("### 🔊 Sesli Yanıt (TTS)")
-                    for ans in answers:
-                        label = f"{ans['model']} ({ans['mode']})"
-                        answer_text = ans["answer"]
-                        if not answer_text.strip():
-                            continue
-                        st.markdown(f"**{label}**")
-                        with st.spinner(f"{label} için metin sese çevriliyor..."):
-                            wav_bytes, sr = synthesize_speech(answer_text)
-                        st.audio(wav_bytes, format="audio/wav")
-                        st.download_button(
-                            f"İndir — {label}",
-                            data=wav_bytes,
-                            file_name=f"cevap_{ans['model']}_{ans['mode']}.wav",
-                            mime="audio/wav",
-                            key=f"voice_dl_{ans['model']}_{ans['mode']}",
-                        )
 
 
 if __name__ == "__main__":
