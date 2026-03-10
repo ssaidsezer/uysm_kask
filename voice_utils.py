@@ -14,7 +14,7 @@ from typing import Tuple
 
 import requests
 
-VOICE_API_URL: str = os.getenv("VOICE_API_URL", "http://192.168.1.151:8000")
+VOICE_API_URL: str = os.getenv("VOICE_API_URL", "http://localhost:8000")
 TTS_MODEL: str = os.getenv("TTS_MODEL", "facebook/mms-tts-tur")
 
 # MMS-TTS-TUR her zaman 16 kHz çıktı üretir
