@@ -1,5 +1,3 @@
 .env
-chroma_db
 __pycache__
-tmp/
 hf_cache/
