@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-transformers<4.48.0
+git+https://github.com/huggingface/transformers.git
+accelerate
 sentencepiece
 scipy
 numpy<2

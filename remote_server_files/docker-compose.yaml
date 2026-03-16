@@ -1,8 +1,12 @@
 services:
   tts-api:
-    build: .
+    image: remote_server_files-tts-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: tts-api
     working_dir: /app
+    init: true
     environment:
       # Varsayılan TTS modeli (istekle override edilebilir)
       TTS_MODEL: "facebook/mms-tts-tur"
@@ -12,6 +16,12 @@ services:
       - "8000:8000"
     volumes:
       - hf_cache:/app/hf_cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
     deploy:
       resources:
         reservations:

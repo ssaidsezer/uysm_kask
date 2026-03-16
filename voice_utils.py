@@ -35,10 +35,21 @@ def get_downloaded_tts_models() -> List[str]:
 _TTS_SAMPLE_RATE = 16_000
 
 
-def synthesize_speech(text: str, model: str = TTS_MODEL) -> Tuple[bytes, int, float]:
-    """Metni uzak VITS modeliyle WAV'a dönüştür, sesi ve saniye cinsinden süreyi döndür."""
+def synthesize_speech(
+    text: str, 
+    model: str = TTS_MODEL, 
+    speaker_id: str | None = None, 
+    voice_preset: str | None = None
+) -> Tuple[bytes, int, float]:
+    """Metni uzak modele WAV'a dönüştürür. Yeni parametreler (speaker_id, preset) eklendi."""
     url = f"{VOICE_API_URL.rstrip('/')}/tts"
-    resp = requests.post(url, json={"text": text, "model": model}, timeout=180)
+    payload = {
+        "text": text, 
+        "model": model,
+        "speaker_id": speaker_id,
+        "voice_preset": voice_preset
+    }
+    resp = requests.post(url, json=payload, timeout=180)
     resp.raise_for_status()
     duration_sec = float(resp.headers.get("X-Audio-Duration", "0.0"))
     return resp.content, _TTS_SAMPLE_RATE, duration_sec

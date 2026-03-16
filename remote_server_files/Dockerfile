@@ -1,11 +1,14 @@
 # ---- Remote RAG + Voice API (GPU) ----
-FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 # libsndfile1: librosa için ses dosyası okuma arka ucu
 # ffmpeg: mp3/m4a/ogg gibi formatların çözümlenmesi
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     libsndfile1 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
@@ -17,7 +20,8 @@ RUN python -m venv --system-site-packages /app/venv
 ENV PATH="/app/venv/bin:$PATH"
 
 # Ek paketleri venv içine kur (torch zaten conda'dan miras alınıyor)
-RUN pip install --no-cache-dir -r requirements-server.txt \
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements-server.txt \
     && python -c "import torch; print('torch OK:', torch.__version__)"
 
 COPY main.py .

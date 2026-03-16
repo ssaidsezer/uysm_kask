@@ -656,6 +656,32 @@ def main() -> None:
         else:
             tts_model_selected = selected_option
 
+        # --- DİNAMİK MİMARİ AYARLARI ---
+        st.markdown("#### ⚙️ Modele Özgü Parametreler")
+        col_m1, col_m2 = st.columns(2)
+        
+        speaker_id = None
+        voice_preset = None
+
+        model_lower = tts_model_selected.lower()
+        
+        with col_m1:
+            if "speecht5" in model_lower:
+                st.info("💡 **SpeechT5 Mimaris:** Bir Speaker ID (0-10000) girerek sesi değiştirebilirsiniz.")
+                speaker_id = st.text_input("Speaker ID (Seed)", value="4312", key="speaker_id_input")
+            elif "qwen" in model_lower or "fish" in model_lower:
+                st.info("💡 **Voice Cloning Mimari:** Belirli bir karakter ID'si veya Stil preset ismi girebilirsiniz.")
+                speaker_id = st.text_input("Karakter/Speaker ID", placeholder="Örn: 7", key="cloning_id_input")
+            else:
+                st.write("Bu model için ek bir parametre gerekmiyor (Standart TTS).")
+
+        with col_m2:
+            if "qwen" in model_lower or "fish" in model_lower:
+                voice_preset = st.selectbox("Ses Stili / Preset", ["Varsayılan", "Neşeli", "Ciddi", "Fısıltı"], key="voice_preset_sel")
+            elif "speecht5" in model_lower:
+                # SpeechT5 için yaygın olan bazı presetler veya roller simüle edilebilir
+                st.caption("Not: SpeechT5'te ses değişimi için 'Speaker ID' yeterlidir.")
+
         st.markdown("---")
         st.markdown("### 📄 Toplu CSV'den Metin Okuma")
         
@@ -684,7 +710,12 @@ def main() -> None:
                         for idx, text_content in enumerate(texts_to_read):
                             st.markdown(f"#### 🟡 Metin {idx + 1}: {text_content}")
                             with st.spinner(f"Metin {tts_model_selected} ile sese çevriliyor..."):
-                                wav_bytes, sr, duration_sec = synthesize_speech(text_content, model=tts_model_selected)
+                                wav_bytes, sr, duration_sec = synthesize_speech(
+                                    text_content, 
+                                    model=tts_model_selected,
+                                    speaker_id=speaker_id,
+                                    voice_preset=voice_preset
+                                )
                             
                             st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Model:** {tts_model_selected}")
                             st.audio(wav_bytes, format="audio/wav")
@@ -701,7 +732,7 @@ def main() -> None:
 
         st.markdown("### ✍️ Manuel Metin Okuma")
 
-        # --- Section 1: Soru Metni ---
+        # --- Section 1: Metin Girişi ---
         transcription = st.text_area(
             "Okunacak metni yazın",
             height=120,
@@ -709,16 +740,21 @@ def main() -> None:
         )
 
         if st.button("Sesi Üret (Sentezle)", key="voice_eval_btn"):
-            q = transcription.strip() # type: ignore
+            q = transcription.strip()
             if not q:
                 st.error("Lütfen bir metin yazın.")
             else:
                 st.markdown("---")
                 st.markdown("### 🔊 Sesli Çıktı (TTS)")
                 with st.spinner(f"Metin {tts_model_selected} ile sese çevriliyor..."):
-                    wav_bytes, sr, duration_sec = synthesize_speech(q, model=tts_model_selected)
+                    wav_bytes, sr, duration_sec = synthesize_speech(
+                        q, 
+                        model=tts_model_selected,
+                        speaker_id=speaker_id,
+                        voice_preset=voice_preset
+                    )
                 
-                st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye")
+                st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Parametre:** {f'ID:{speaker_id}' if speaker_id else 'Default'}")
                 st.audio(wav_bytes, format="audio/wav")
                 st.download_button(
                     "Sesi İndir",
