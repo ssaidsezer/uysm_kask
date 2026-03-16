@@ -1,0 +1,12 @@
+services:
+  streamlit-ui:
+    image: uysm-streamlit-ui:latest
+    build:
+      context: ..
+      dockerfile: ui_files/Dockerfile
+    container_name: streamlit-ui
+    env_file:
+      - ../.env
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

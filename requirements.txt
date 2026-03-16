@@ -6,3 +6,4 @@ pandas
 requests
 python-dotenv
 numpy<2
+qdrant-client
