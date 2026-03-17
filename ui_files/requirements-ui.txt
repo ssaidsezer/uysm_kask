@@ -1,8 +1,6 @@
 streamlit>=1.27.0
 openai>=1.0.0
-sentence-transformers
 pypdf
-pandas
 requests
 python-dotenv
 numpy<2

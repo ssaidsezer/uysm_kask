@@ -296,15 +296,31 @@ def retrieve_context(
 
     client = get_qdrant_client(url=qdrant_url)
 
-    results = client.search(
-        collection_name=collection_name,
-        query_vector=question_embedding,
-        limit=k,
-    )
+    # qdrant-client API sürümüne göre farklı metod kullanımı:
+    # - eski sürümler: search(...)
+    # - yeni sürümler: query_points(...)
+    if hasattr(client, "search"):
+        results = client.search(
+            collection_name=collection_name,
+            query_vector=question_embedding,
+            limit=k,
+        )
+    elif hasattr(client, "query_points"):
+        query_result = client.query_points(
+            collection_name=collection_name,
+            query=question_embedding,
+            limit=k,
+        )
+        results = getattr(query_result, "points", query_result)
+    else:
+        raise RuntimeError("Qdrant client API uyumsuz: search/query_points bulunamadı")
 
     docs: List[str] = []
     for hit in results:
-        payload = hit.payload or {}
+        if isinstance(hit, dict):
+            payload = hit.get("payload") or {}
+        else:
+            payload = getattr(hit, "payload", None) or {}
         text = payload.get("text", "")
         if isinstance(text, str) and text.strip():
             docs.append(text)
