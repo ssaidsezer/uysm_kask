@@ -1,3 +1,5 @@
 .env
 __pycache__
 hf_cache/
+.DS_Store
+.vscode

@@ -54,14 +54,3 @@ def synthesize_speech(
     duration_sec = float(resp.headers.get("X-Audio-Duration", "0.0"))
     return resp.content, _TTS_SAMPLE_RATE, duration_sec
 
-
-def transcribe_audio(audio_bytes: bytes) -> str:
-    """Ses dosyasını (WAV, MP3 vs.) uzak STT modeline gönder ve metin olarak geri al."""
-    url = f"{VOICE_API_URL.rstrip('/')}/stt"
-    
-    files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
-    resp = requests.post(url, files=files, timeout=180)
-    resp.raise_for_status()
-    
-    # Sunucudan gelen JSON içindeki 'text' değerini alıyoruz
-    return resp.json().get("text", "")

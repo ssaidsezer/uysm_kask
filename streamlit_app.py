@@ -23,7 +23,6 @@ from rag_index import (
 from pipeline import (
     QA_OLLAMA_MODEL,
     EVAL_MODEL_NAME,
-    evaluate_answer,
     evaluate_answer_any,
     generate_rag_answer_ollama,
     generate_no_rag_answer_ollama,
