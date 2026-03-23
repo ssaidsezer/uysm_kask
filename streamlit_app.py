@@ -512,7 +512,7 @@ def main() -> None:
         all_models = sorted({m for m in ollama_models if m})
 
     tab_index, tab_eval, tab_chat, tab_voice = st.tabs(
-        ["📚 PDF İndeksleme", "📊 CSV Değerlendirme", "💬 Manuel Chat Eval", "🎙️ Sesli Değerlendirme"]
+        ["PDF İndeksleme", "CSV Değerlendirme", "Manuel Chat Eval", "Sesli Değerlendirme"]
     )
 
     # =========================================================================
@@ -570,9 +570,9 @@ def main() -> None:
                     status_text = st.empty()
 
                     phase_labels = {
-                        "pdf_extract": "📄 PDF'ler okunuyor",
-                        "ollama_embed": "🧠 Ollama embedding hesaplanıyor",
-                        "qdrant_upsert": "💾 Qdrant'a yazılıyor",
+                        "pdf_extract": "PDF'ler okunuyor",
+                        "ollama_embed": "Ollama embedding hesaplanıyor",
+                        "qdrant_upsert": "Qdrant'a yazılıyor",
                     }
                     # Ağırlıklar: embedding en uzun süren, ona en çok pay ver
                     phase_weights = {
@@ -593,7 +593,7 @@ def main() -> None:
                         pct_in_phase = current / total
                         overall = phase_starts.get(phase, 0) + phase_weights.get(phase, 0) * pct_in_phase
                         overall = min(overall, 1.0)
-                        progress_bar.progress(overall, text=f"{label}  ({current}/{total})  ⏱ {elapsed_sec:.1f}s")
+                        progress_bar.progress(overall, text=f"{label}  ({current}/{total})  {elapsed_sec:.1f}s")
                         status_text.caption(f"{label}: {current}/{total} — {elapsed_sec:.1f} saniye")
 
                     result = index_pdfs(
@@ -606,18 +606,18 @@ def main() -> None:
                         progress_callback=on_progress,
                     )
 
-                    progress_bar.progress(1.0, text="✅ Tamamlandı!")
+                    progress_bar.progress(1.0, text="Tamamlandı!")
                     status_text.empty()
 
                     st.success(f"İndeksleme tamamlandı! Toplam **{result['total_chunks']}** chunk indekslendi.")
 
                     # Zamanlama tablosu
-                    st.markdown("#### ⏱ Süre Detayları")
+                    st.markdown("#### Süre Detayları")
                     col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("📄 PDF Okuma", f"{result['pdf_extract_sec']}s")
-                    col2.metric("🧠 Ollama Embed", f"{result['ollama_embed_sec']}s")
-                    col3.metric("💾 Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
-                    col4.metric("⏱ Toplam", f"{result['total_sec']}s")
+                    col1.metric("PDF Okuma", f"{result['pdf_extract_sec']}s")
+                    col2.metric("Ollama Embed", f"{result['ollama_embed_sec']}s")
+                    col3.metric("Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
+                    col4.metric("Toplam", f"{result['total_sec']}s")
 
                     st.write("Koleksiyon:", collection_name)
                 except Exception as exc:
@@ -836,7 +836,7 @@ def main() -> None:
         if default_model not in model_options:
             model_options.insert(0, default_model)
             
-        custom_option = "📝 Model Adı Girin"
+        custom_option = "Model Adı Girin"
         if custom_option not in model_options:
             model_options.append(custom_option)
 
@@ -852,7 +852,7 @@ def main() -> None:
             tts_model_selected = selected_option
 
         # --- DİNAMİK MİMARİ AYARLARI ---
-        st.markdown("#### ⚙️ Modele Özgü Parametreler")
+        st.markdown("#### Modele Özgü Parametreler")
         col_m1, col_m2 = st.columns(2)
         
         speaker_id = None
@@ -862,10 +862,10 @@ def main() -> None:
         
         with col_m1:
             if "speecht5" in model_lower:
-                st.info("💡 **SpeechT5 Mimaris:** Bir Speaker ID (0-10000) girerek sesi değiştirebilirsiniz.")
+                st.info("**SpeechT5 Mimaris:** Bir Speaker ID (0-10000) girerek sesi değiştirebilirsiniz.")
                 speaker_id = st.text_input("Speaker ID (Seed)", value="4312", key="speaker_id_input")
             elif "qwen" in model_lower or "fish" in model_lower:
-                st.info("💡 **Voice Cloning Mimari:** Belirli bir karakter ID'si veya Stil preset ismi girebilirsiniz.")
+                st.info("**Voice Cloning Mimari:** Belirli bir karakter ID'si veya Stil preset ismi girebilirsiniz.")
                 speaker_id = st.text_input("Karakter/Speaker ID", placeholder="Örn: 7", key="cloning_id_input")
             else:
                 st.write("Bu model için ek bir parametre gerekmiyor (Standart TTS).")
@@ -878,7 +878,7 @@ def main() -> None:
                 st.caption("Not: SpeechT5'te ses değişimi için 'Speaker ID' yeterlidir.")
 
         st.markdown("---")
-        st.markdown("### 📄 Toplu CSV'den Metin Okuma")
+        st.markdown("### Toplu CSV'den Metin Okuma")
         
         uploaded_voice_csv = st.file_uploader(
             "Metin CSV'si Yükle (Sadece tek sütun ve sadece metinler içermelidir)",
@@ -903,7 +903,7 @@ def main() -> None:
                     else:
                         st.success(f"Toplam {len(texts_to_read)} adet metin bulundu. Sesli yanıtlar üretiliyor...")
                         for idx, text_content in enumerate(texts_to_read):
-                            st.markdown(f"#### 🟡 Metin {idx + 1}: {text_content}")
+                            st.markdown(f"#### Metin {idx + 1}: {text_content}")
                             with st.spinner(f"Metin {tts_model_selected} ile sese çevriliyor..."):
                                 wav_bytes, sr, duration_sec = synthesize_speech(
                                     text_content, 
@@ -912,7 +912,7 @@ def main() -> None:
                                     voice_preset=voice_preset
                                 )
                             
-                            st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Model:** {tts_model_selected}")
+                            st.write(f"**Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Model:** {tts_model_selected}")
                             st.audio(wav_bytes, format="audio/wav")
                             st.download_button(
                                 f"İndir — Metin {idx+1}",
@@ -925,7 +925,7 @@ def main() -> None:
                 except Exception as e:
                     st.error(f"CSV işlenirken bir hata oluştu: {e}")
 
-        st.markdown("### ✍️ Manuel Metin Okuma")
+        st.markdown("### Manuel Metin Okuma")
 
         # --- Section 1: Metin Girişi ---
         transcription = st.text_area(
@@ -940,7 +940,7 @@ def main() -> None:
                 st.error("Lütfen bir metin yazın.")
             else:
                 st.markdown("---")
-                st.markdown("### 🔊 Sesli Çıktı (TTS)")
+                st.markdown("### Sesli Çıktı (TTS)")
                 with st.spinner(f"Metin {tts_model_selected} ile sese çevriliyor..."):
                     wav_bytes, sr, duration_sec = synthesize_speech(
                         q, 
@@ -949,7 +949,7 @@ def main() -> None:
                         voice_preset=voice_preset
                     )
                 
-                st.write(f"⏱️ **Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Parametre:** {f'ID:{speaker_id}' if speaker_id else 'Default'}")
+                st.write(f"**Ses Uzunluğu:** `{duration_sec:.2f}` saniye | **Parametre:** {f'ID:{speaker_id}' if speaker_id else 'Default'}")
                 st.audio(wav_bytes, format="audio/wav")
                 st.download_button(
                     "Sesi İndir",
