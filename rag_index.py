@@ -5,8 +5,8 @@ import time
 import uuid
 from typing import List, Optional, Sequence
 
+import pdfplumber
 import requests
-from pypdf import PdfReader
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
@@ -146,29 +146,29 @@ def _extract_pdf_chunks(
     chunk_overlap: int = 200,
 ) -> List[dict]:
     """PDF'den text chunk'larını çıkar."""
-    reader = PdfReader(pdf_path)
     chunks: List[dict] = []
 
-    for page_index, page in enumerate(reader.pages):
-        try:
-            page_text = page.extract_text() or ""
-        except Exception:
-            page_text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_index, page in enumerate(pdf.pages):
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
 
-        for chunk_index, chunk_text_str in enumerate(
-            _chunk_text(page_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        ):
-            chunks.append(
-                {
-                    "id": str(uuid.uuid4()),
-                    "text": chunk_text_str,
-                    "metadata": {
-                        "source": pdf_path,
-                        "page": page_index,
-                        "chunk": chunk_index,
-                    },
-                }
-            )
+            for chunk_index, chunk_text_str in enumerate(
+                _chunk_text(page_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            ):
+                chunks.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "text": chunk_text_str,
+                        "metadata": {
+                            "source": pdf_path,
+                            "page": page_index,
+                            "chunk": chunk_index,
+                        },
+                    }
+                )
 
     return chunks
 
@@ -297,24 +297,12 @@ def retrieve_context(
 
     client = get_qdrant_client(url=qdrant_url)
 
-    # qdrant-client API sürümüne göre farklı metod kullanımı:
-    # - eski sürümler: search(...)
-    # - yeni sürümler: query_points(...)
-    if hasattr(client, "search"):
-        results = client.search(
-            collection_name=collection_name,
-            query_vector=question_embedding,
-            limit=k,
-        )
-    elif hasattr(client, "query_points"):
-        query_result = client.query_points(
-            collection_name=collection_name,
-            query=question_embedding,
-            limit=k,
-        )
-        results = getattr(query_result, "points", query_result)
-    else:
-        raise RuntimeError("Qdrant client API uyumsuz: search/query_points bulunamadı")
+    query_result = client.query_points(
+        collection_name=collection_name,
+        query=question_embedding,
+        limit=k,
+    )
+    results = getattr(query_result, "points", query_result)
 
     docs: List[str] = []
     for hit in results:
@@ -330,3 +318,36 @@ def retrieve_context(
         return ""
 
     return "\n\n".join(docs)
+
+
+def retrieve_chunks(
+    question: str,
+    collection_name: str = DEFAULT_COLLECTION_NAME,
+    k: int = 5,
+    qdrant_url: str = QDRANT_URL,
+) -> List[str]:
+    """
+    Soruyu Ollama ile embed edip Qdrant'tan en yakın k chunk'ı liste olarak döndürür.
+    """
+    question_embedding = get_embeddings([question])[0]
+
+    client = get_qdrant_client(url=qdrant_url)
+
+    query_result = client.query_points(
+        collection_name=collection_name,
+        query=question_embedding,
+        limit=k,
+    )
+    results = getattr(query_result, "points", query_result)
+
+    docs: List[str] = []
+    for hit in results:
+        if isinstance(hit, dict):
+            payload = hit.get("payload") or {}
+        else:
+            payload = getattr(hit, "payload", None) or {}
+        text = payload.get("text", "")
+        if isinstance(text, str) and text.strip():
+            docs.append(text)
+
+    return docs

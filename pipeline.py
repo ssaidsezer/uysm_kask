@@ -13,7 +13,7 @@ from rag_index import (
     DEFAULT_COLLECTION_NAME,
     QDRANT_URL,
     get_qdrant_client,
-    retrieve_context,
+    retrieve_chunks,
 )
 
 
@@ -487,6 +487,7 @@ def run_full_pipeline(
     eval_backend: str = "openai",
     eval_local_model: Optional[str] = None,
     qa_model: str = QA_OLLAMA_MODEL,
+    rag_mode: str = "rag",
 ) -> List[Dict]:
     """
     High-level helper:
@@ -494,6 +495,8 @@ def run_full_pipeline(
       - For each question, retrieve context from Qdrant (via Ollama embeddings).
       - Ask Ollama for an answer.
       - Evaluate the answer and return flat dict rows.
+
+    rag_mode: "rag" | "no_rag" | "both"
     """
     questions = load_questions(csv_path)
     if not questions:
@@ -511,36 +514,63 @@ def run_full_pipeline(
         question = item["question"]
         observation_idea = item.get("observation_idea", "")
 
-        context = retrieve_context(
-            question=question,
-            collection_name=collection_name,
-            k=k,
-            qdrant_url=qdrant_url,
-        )
+        # --- RAG'li ---
+        if rag_mode in ("rag", "both"):
+            chunks = retrieve_chunks(
+                question=question,
+                collection_name=collection_name,
+                k=k,
+                qdrant_url=qdrant_url,
+            )
+            context = "\n\n".join(chunks)
+            rag_result = generate_rag_answer_ollama(
+                question=question,
+                context=context,
+                model=qa_model,
+            )
+            record = {
+                "model": qa_model,
+                "question_index": item["question_index"],
+                "question": question,
+                "observation_idea": observation_idea,
+                "model_answer": rag_result.get("answer", ""),
+                "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
+            }
+            eval_row = evaluate_answer_any(
+                record=record,
+                eval_model=eval_model,
+                client=openai_client if eval_backend == "openai" else None,
+                backend=eval_backend,
+                local_model=eval_local_model,
+            )
+            eval_row["rag_type"] = "RAG'li"
+            eval_row["retrieved_chunks"] = json.dumps(chunks, ensure_ascii=False)
+            rows.append(eval_row)
 
-        rag_result = generate_rag_answer_ollama(
-            question=question,
-            context=context,
-            model=qa_model,
-        )
-
-        record = {
-            "model": qa_model,
-            "question_index": item["question_index"],
-            "question": question,
-            "observation_idea": observation_idea,
-            "model_answer": rag_result.get("answer", ""),
-            "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
-        }
-
-        eval_row = evaluate_answer_any(
-            record=record,
-            eval_model=eval_model,
-            client=openai_client if eval_backend == "openai" else None,
-            backend=eval_backend,
-            local_model=eval_local_model,
-        )
-        rows.append(eval_row)
+        # --- RAG'siz ---
+        if rag_mode in ("no_rag", "both"):
+            no_rag_result = generate_no_rag_answer_ollama(
+                question=question,
+                model=qa_model,
+            )
+            record = {
+                "model": qa_model,
+                "question_index": item["question_index"],
+                "question": question,
+                "observation_idea": observation_idea,
+                "model_answer": no_rag_result.get("answer", ""),
+                "response_time_seconds": no_rag_result.get("response_time_seconds", 0.0),
+            }
+            eval_row = evaluate_answer_any(
+                record=record,
+                eval_model=eval_model,
+                client=openai_client if eval_backend == "openai" else None,
+                backend=eval_backend,
+                local_model=eval_local_model,
+            )
+            eval_row["rag_type"] = "RAG'siz"
+            eval_row["retrieved_chunks"] = ""
+            rows.append(eval_row)
 
     return rows
 
