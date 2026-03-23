@@ -135,14 +135,6 @@ def _list_embedding_models() -> tuple[List[str], str]:
     return embed_models, ""
 
 
-def _default_pdf_paths() -> List[Path]:
-    candidates = [
-        WORKSPACE_DIR / "askeri_egitim_kitabi.pdf",
-        WORKSPACE_DIR / "taktik_muharebe_yarali_bakimi_el_kitabi.pdf",
-    ]
-    return [p for p in candidates if p.exists()]
-
-
 def _ensure_tmp_dir() -> Path:
     tmp_dir = WORKSPACE_DIR / "tmp"
     tmp_dir.mkdir(exist_ok=True)
