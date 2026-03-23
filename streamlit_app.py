@@ -28,6 +28,7 @@ from pipeline import (
     generate_no_rag_answer_ollama,
     get_openai_client,
     run_full_pipeline,
+    warmup_model,
     write_results_to_csv,
 )
 from voice_utils import synthesize_speech, get_downloaded_tts_models
@@ -181,6 +182,7 @@ def _run_chat_eval(
     answers: List[dict] = []
 
     for qa_model_name in selected_models:
+        warmup_model(model=qa_model_name)
         st.markdown(f"**Model: {qa_model_name}**")
         cols = st.columns(2) if compare_no_rag else [st.container()]
 

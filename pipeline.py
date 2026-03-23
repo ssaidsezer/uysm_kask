@@ -68,6 +68,27 @@ def _build_rag_prompt(question: str, context: str) -> str:
     )
 
 
+def warmup_model(
+    model: str = QA_OLLAMA_MODEL,
+    base_url: str = OLLAMA_BASE_URL,
+    timeout: int = 120,
+) -> None:
+    """
+    Ollama'ya modeli RAM'e yüklemesi için boş bir istek gönderir.
+    Bu çağrı response_time ölçümüne dahil edilmez.
+    """
+    if not base_url:
+        return
+    try:
+        requests.post(
+            f"{base_url.rstrip('/')}/api/generate",
+            json={"model": model, "keep_alive": "5m"},
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+
+
 def generate_rag_answer_ollama(
     question: str,
     context: str,
@@ -483,6 +504,8 @@ def run_full_pipeline(
         openai_client = get_openai_client()
 
     rows: List[Dict] = []
+
+    warmup_model(model=qa_model)
 
     for item in questions:
         question = item["question"]
