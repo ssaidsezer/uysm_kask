@@ -51,13 +51,12 @@ def _is_embedding_model(host: str, model_name: str) -> bool:
     except Exception:
         return False
 
-    template = (data.get("template") or "").strip()
-    if not template:
+    # Model adında "embed" geçiyorsa doğrudan embedding say
+    if "embed" in model_name.lower():
         return True
 
-    model_info = data.get("model_info") or {}
-    arch = str(model_info.get("general.architecture", "")).lower()
-    if arch in ("bert", "nomic-bert"):
+    template = (data.get("template") or "").strip()
+    if not template:
         return True
 
     return False
@@ -140,6 +139,22 @@ def _ensure_tmp_dir() -> Path:
     tmp_dir = WORKSPACE_DIR / "tmp"
     tmp_dir.mkdir(exist_ok=True)
     return tmp_dir
+
+
+def _pull_ollama_model(model_name: str) -> tuple[bool, str]:
+    """Ollama sunucusunda model pull eder. (başarı, mesaj) döndürür."""
+    host = os.environ.get("OLLAMA_HOST", "")
+    if not host:
+        return False, "OLLAMA_HOST ortam değişkeni tanımlı değil."
+    if not host.startswith("http"):
+        host = f"http://{host}"
+    url = host.rstrip("/") + "/api/pull"
+    try:
+        resp = requests.post(url, json={"name": model_name, "stream": False}, timeout=300)
+        resp.raise_for_status()
+        return True, f"'{model_name}' başarıyla pull edildi."
+    except Exception as e:
+        return False, f"Pull sırasında hata: {e}"
 
 
 def _run_chat_eval(
@@ -307,10 +322,20 @@ def _render_qa_model_selector(all_models: List[str], filtered_count: int, key_pr
     search_key = f"{key_prefix}_qa_model_search"
     expander_key = f"{key_prefix}_qa_expander_open"
     filtered_key = f"_{key_prefix}_qa_filtered_models"
+    custom_models_key = f"{key_prefix}_custom_models"
+
+    if custom_models_key not in st.session_state:
+        st.session_state[custom_models_key] = []
+
+    # Custom modelleri listenin başına ekle
+    combined_models = list(all_models)
+    for cm in st.session_state[custom_models_key]:
+        if cm not in combined_models:
+            combined_models.insert(0, cm)
 
     search_value = st.session_state.get(search_key, "")
     filtered_models = (
-        [m for m in all_models if search_value.lower() in m.lower()] if search_value else all_models
+        [m for m in combined_models if search_value.lower() in m.lower()] if search_value else combined_models
     )
 
     def _select_all():
@@ -324,9 +349,9 @@ def _render_qa_model_selector(all_models: List[str], filtered_count: int, key_pr
     st.session_state[filtered_key] = filtered_models
 
     selected_count = sum(
-        1 for m in all_models if st.session_state.get(f"{key_prefix}_qa_model_select_{m}", False)
+        1 for m in combined_models if st.session_state.get(f"{key_prefix}_qa_model_select_{m}", False)
     )
-    expander_label = f"Modelleri göster ({selected_count}/{len(all_models)} seçili)"
+    expander_label = f"Modelleri göster ({selected_count}/{len(combined_models)} seçili)"
     if filtered_count > 0:
         expander_label += f" · {filtered_count} embedding filtrelendi"
 
@@ -352,6 +377,35 @@ def _render_qa_model_selector(all_models: List[str], filtered_count: int, key_pr
                     help="Bu modeli RAG değerlendirmesine dahil et.",
                 ):
                     qa_models_selected.append(model_name)
+
+    # Yeni Ollama modeli ekleme / pull
+    st.markdown("**Yeni Ollama modeli ekle**")
+    col_new_model, col_add_btn = st.columns([4, 1])
+    with col_new_model:
+        new_model_input = st.text_input(
+            "Ollama Model Adı Girin",
+            placeholder="örn: llama3.2:3b",
+            key=f"{key_prefix}_new_model_input",
+            label_visibility="collapsed",
+        )
+    with col_add_btn:
+        if st.button("Ekle / Pull Et", key=f"{key_prefix}_add_model_btn"):
+            model_to_add = new_model_input.strip()
+            if not model_to_add:
+                st.warning("Model adı boş olamaz.")
+            elif model_to_add in combined_models:
+                st.info(f"'{model_to_add}' zaten listede mevcut.")
+            else:
+                with st.spinner(f"'{model_to_add}' pull ediliyor..."):
+                    success, msg = _pull_ollama_model(model_to_add)
+                if success:
+                    st.session_state[custom_models_key].append(model_to_add)
+                    st.session_state[f"{key_prefix}_qa_model_select_{model_to_add}"] = True
+                    _list_ollama_models.clear()
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
     return qa_models_selected
 
@@ -782,7 +836,7 @@ def main() -> None:
         if default_model not in model_options:
             model_options.insert(0, default_model)
             
-        custom_option = "🌍 Yeni Model Adı Gireceğim..."
+        custom_option = "📝 Model Adı Girin"
         if custom_option not in model_options:
             model_options.append(custom_option)
 
