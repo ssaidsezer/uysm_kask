@@ -465,6 +465,7 @@ def run_full_pipeline(
     openai_client: Optional[OpenAI] = None,
     eval_backend: str = "openai",
     eval_local_model: Optional[str] = None,
+    qa_model: str = QA_OLLAMA_MODEL,
 ) -> List[Dict]:
     """
     High-level helper:
@@ -497,10 +498,11 @@ def run_full_pipeline(
         rag_result = generate_rag_answer_ollama(
             question=question,
             context=context,
+            model=qa_model,
         )
 
         record = {
-            "model": QA_OLLAMA_MODEL,
+            "model": qa_model,
             "question_index": item["question_index"],
             "question": question,
             "observation_idea": observation_idea,

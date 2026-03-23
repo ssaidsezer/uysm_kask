@@ -322,6 +322,87 @@ def _run_chat_eval(
     return answers
 
 
+def _render_qa_model_selector(all_models: List[str], filtered_count: int, key_prefix: str) -> List[str]:
+    """QA model seçim UI'ı render eder, seçili modelleri döndürür."""
+    search_key = f"{key_prefix}_qa_model_search"
+    expander_key = f"{key_prefix}_qa_expander_open"
+    filtered_key = f"_{key_prefix}_qa_filtered_models"
+
+    search_value = st.session_state.get(search_key, "")
+    filtered_models = (
+        [m for m in all_models if search_value.lower() in m.lower()] if search_value else all_models
+    )
+
+    def _select_all():
+        for m in st.session_state.get(filtered_key, []):
+            st.session_state[f"{key_prefix}_qa_model_select_{m}"] = True
+
+    def _deselect_all():
+        for m in st.session_state.get(filtered_key, []):
+            st.session_state[f"{key_prefix}_qa_model_select_{m}"] = False
+
+    st.session_state[filtered_key] = filtered_models
+
+    selected_count = sum(
+        1 for m in all_models if st.session_state.get(f"{key_prefix}_qa_model_select_{m}", False)
+    )
+    expander_label = f"Modelleri göster ({selected_count}/{len(all_models)} seçili)"
+    if filtered_count > 0:
+        expander_label += f" · {filtered_count} embedding filtrelendi"
+
+    if expander_key not in st.session_state:
+        st.session_state[expander_key] = False
+
+    qa_models_selected: List[str] = []
+    with st.expander(expander_label, expanded=st.session_state[expander_key]):
+        st.session_state[expander_key] = True
+        st.text_input("Model ara", placeholder="Model adında ara...", key=search_key)
+        col_sel, col_desel = st.columns(2)
+        with col_sel:
+            st.button("Hepsini seç", key=f"{key_prefix}_qa_select_all", on_click=_select_all)
+        with col_desel:
+            st.button("Hepsini kaldır", key=f"{key_prefix}_qa_deselect_all", on_click=_deselect_all)
+        for model_name in filtered_models:
+            if st.checkbox(
+                model_name,
+                value=st.session_state.get(f"{key_prefix}_qa_model_select_{model_name}", False),
+                key=f"{key_prefix}_qa_model_select_{model_name}",
+                help="Bu modeli RAG değerlendirmesine dahil et.",
+            ):
+                qa_models_selected.append(model_name)
+
+    return qa_models_selected
+
+
+def _render_eval_settings(all_models: List[str], key_prefix: str):
+    """Değerlendirme motoru ayarlarını render eder. (eval_backend, eval_model_name, local_eval_model_name) döndürür."""
+    eval_backend = st.selectbox(
+        "Değerlendirme motoru",
+        options=["OpenAI", "Yerel (Ollama)"],
+        index=0,
+        key=f"{key_prefix}_eval_backend",
+        help="Cevapları OpenAI ile mi yoksa yerel bir Ollama modeliyle mi değerlendireceğini seç.",
+    )
+    local_eval_model_name: str | None = None
+    if eval_backend == "OpenAI":
+        eval_model_name = st.text_input(
+            "OpenAI değerlendirme modeli",
+            value=EVAL_MODEL_NAME,
+            key=f"{key_prefix}_eval_model_name",
+            help="OpenAI değerlendirme motoru seçiliyse kullanılacak model.",
+        )
+    else:
+        eval_model_name = EVAL_MODEL_NAME
+        local_eval_model_name = st.selectbox(
+            "Yerel değerlendirme modeli (Ollama)",
+            options=all_models if all_models else ["Bağlantı hatası/Model Yok"],
+            index=0,
+            key=f"{key_prefix}_local_eval_model",
+            help="Eval için kullanılacak yerel Ollama modelini seç.",
+        )
+    return eval_backend, eval_model_name, local_eval_model_name
+
+
 def main() -> None:
     st.set_page_config(page_title="RAG Değerlendirme Pipeline", layout="wide")
 
@@ -359,136 +440,36 @@ def main() -> None:
         "cevapları Ollama ile üret ve değerlendir."
     )
 
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+    collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
+
     with st.sidebar:
         st.header("Ayarlar")
-
-        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-        qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
-        collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
-
-        # ── Bağlantı Durumu ──
-        st.markdown("---")
         st.markdown("**Bağlantı Durumu**")
 
-        qdrant_ok = False
         try:
             resp = requests.get(f"{qdrant_url}/collections", timeout=5)
             resp.raise_for_status()
-            qdrant_ok = True
             st.success(f"Qdrant bağlı ({qdrant_url})")
         except Exception:
             st.error(f"Qdrant erişilemiyor ({qdrant_url})")
 
-        ollama_ok = False
         ollama_base = os.environ.get("OLLAMA_BASE_URL", "")
         if ollama_base:
             try:
                 resp = requests.get(f"{ollama_base.rstrip('/')}/api/tags", timeout=5)
                 resp.raise_for_status()
-                ollama_ok = True
                 st.success(f"Ollama bağlı ({ollama_base})")
             except Exception:
                 st.error(f"Ollama erişilemiyor ({ollama_base})")
 
-        # ── Model Seçimi ──
-        st.markdown("---")
-
-        with st.spinner("Ollama modelleri listeleniyor (embedding modelleri filtreleniyor)..."):
-            ollama_models, connection_error, filter_elapsed, filtered_count = _list_ollama_models()
-
-        if connection_error:
-            st.error(connection_error)
-            all_models = []
-        else:
-            all_models: List[str] = sorted({m for m in ollama_models if m})
-            if not all_models:
-                st.warning("Ollama sunucusuna bağlanıldı ancak herhangi bir model bulunamadı.")
-
-        # Arama değerini session state'ten al (text_input widget'ı daha render edilmeden
-        # önce de doğru değeri verir, çünkü Streamlit widget değerlerini session state'te saklar)
-        search_value = st.session_state.get("qa_model_search", "")
-        if search_value:
-            filtered_models = [m for m in all_models if search_value.lower() in m.lower()]
-        else:
-            filtered_models = all_models
-
-        # Callback'ler script body'den önce çalışır → selected_count doğru hesaplanır
-        def _qa_select_all():
-            for m in st.session_state.get("_qa_filtered_models", []):
-                st.session_state[f"qa_model_select_{m}"] = True
-
-        def _qa_deselect_all():
-            for m in st.session_state.get("_qa_filtered_models", []):
-                st.session_state[f"qa_model_select_{m}"] = False
-
-        st.session_state["_qa_filtered_models"] = filtered_models
-
-        # Seçili model sayısını hesapla (expander başlığı için)
-        selected_count = sum(
-            1 for m in all_models
-            if st.session_state.get(f"qa_model_select_{m}", False)
-        )
-        expander_label = f"Modelleri göster ({selected_count}/{len(all_models)} seçili)"
-        if filtered_count > 0:
-            expander_label += f" · {filtered_count} embedding filtrelendi"
-
-        st.markdown("**Değerlendirilecek QA modelleri**")
-
-        # Expander açık/kapalı durumunu session state'te tut
-        if "qa_expander_open" not in st.session_state:
-            st.session_state["qa_expander_open"] = False
-
-        qa_models_selected: List[str] = []
-        with st.expander(expander_label, expanded=st.session_state["qa_expander_open"]):
-            # Expander açıldıysa açık kalsın (checkbox tıklamalarında kapanmasın)
-            st.session_state["qa_expander_open"] = True
-
-            st.text_input(
-                "Model ara",
-                placeholder="Model adında ara...",
-                key="qa_model_search",
-            )
-
-            col_sel_all, col_desel_all = st.columns(2)
-            with col_sel_all:
-                st.button("Hepsini seç", key="qa_select_all", on_click=_qa_select_all)
-            with col_desel_all:
-                st.button("Hepsini kaldır", key="qa_deselect_all", on_click=_qa_deselect_all)
-
-            for model_name in filtered_models:
-                if st.checkbox(
-                    model_name,
-                    value=st.session_state.get(f"qa_model_select_{model_name}", False),
-                    key=f"qa_model_select_{model_name}",
-                    help="Bu modeli RAG değerlendirmesine dahil et.",
-                ):
-                    qa_models_selected.append(model_name)
-
-        # ── Değerlendirme Motoru ──
-        st.markdown("---")
-
-        eval_backend = st.selectbox(
-            "Değerlendirme motoru",
-            options=["OpenAI", "Yerel (Ollama)"],
-            index=0,
-            help="Cevapları OpenAI ile mi yoksa yerel bir Ollama modeliyle mi değerlendireceğini seç.",
-        )
-
-        local_eval_model_name: str | None = None
-        if eval_backend == "OpenAI":
-            eval_model_name = st.text_input(
-                "OpenAI değerlendirme modeli",
-                value=EVAL_MODEL_NAME,
-                help="OpenAI değerlendirme motoru seçiliyse kullanılacak model.",
-            )
-        else:
-            eval_model_name = EVAL_MODEL_NAME
-            local_eval_model_name = st.selectbox(
-                "Yerel değerlendirme modeli (Ollama)",
-                options=all_models if all_models else ["Bağlantı hatası/Model Yok"],
-                index=0,
-                help="Eval için kullanılacak yerel Ollama modelini seç.",
-            )
+    # Ollama model listesi — cache'li, iki tab'da paylaşılır
+    ollama_models, connection_error, _filter_elapsed, filtered_count = _list_ollama_models()
+    if connection_error:
+        all_models: List[str] = []
+    else:
+        all_models = sorted({m for m in ollama_models if m})
 
     tab_index, tab_eval, tab_chat, tab_voice = st.tabs(
         ["📚 PDF İndeksleme", "📊 CSV Değerlendirme", "💬 Manuel Chat Eval", "🎙️ Sesli Değerlendirme"]
@@ -608,6 +589,15 @@ def main() -> None:
     with tab_eval:
         st.subheader("CSV'den soruları değerlendir")
 
+        st.markdown("**Değerlendirilecek QA modelleri**")
+        if connection_error:
+            st.error(connection_error)
+        qa_models_selected = _render_qa_model_selector(all_models, filtered_count, key_prefix="csv")
+
+        st.markdown("---")
+        eval_backend, eval_model_name, local_eval_model_name = _render_eval_settings(all_models, key_prefix="csv")
+        st.markdown("---")
+
         uploaded_csv = st.file_uploader(
             "CSV yükle (Questions, Answers kolonları içermeli)",
             type=["csv"],
@@ -652,20 +642,28 @@ def main() -> None:
             else:
                 client = None
 
-            try:
-                with st.spinner("Pipeline çalışıyor (RAG + değerlendirme)..."):
-                    rows = run_full_pipeline(
-                        csv_path=str(csv_path),
-                        collection_name=collection_name,
-                        qdrant_url=qdrant_url,
-                        eval_model=eval_model_name,
-                        k=int(k),
-                        openai_client=client,
-                        eval_backend="openai" if eval_backend == "OpenAI" else "ollama",
-                        eval_local_model=local_eval_model_name,
-                    )
-            except Exception as exc:
-                st.error(f"Pipeline çalışırken bir hata oluştu ve işlem durduruldu: {exc}")
+            models_to_run = qa_models_selected if qa_models_selected else ([QA_OLLAMA_MODEL] if not all_models else [all_models[0]])
+            rows = []
+            pipeline_error = False
+            for qa_model in models_to_run:
+                try:
+                    with st.spinner(f"Pipeline çalışıyor: {qa_model} (RAG + değerlendirme)..."):
+                        model_rows = run_full_pipeline(
+                            csv_path=str(csv_path),
+                            collection_name=collection_name,
+                            qdrant_url=qdrant_url,
+                            eval_model=eval_model_name,
+                            k=int(k),
+                            openai_client=client,
+                            eval_backend="openai" if eval_backend == "OpenAI" else "ollama",
+                            eval_local_model=local_eval_model_name,
+                            qa_model=qa_model,
+                        )
+                        rows.extend(model_rows)
+                except Exception as exc:
+                    st.error(f"{qa_model} için pipeline çalışırken hata oluştu: {exc}")
+                    pipeline_error = True
+            if pipeline_error and not rows:
                 return
 
             if not rows:
@@ -691,6 +689,15 @@ def main() -> None:
     # =========================================================================
     with tab_chat:
         st.subheader("Manuel soru sor ve RAG vs RAG'siz karşılaştır")
+
+        st.markdown("**Değerlendirilecek QA modelleri**")
+        if connection_error:
+            st.error(connection_error)
+        chat_qa_models_selected = _render_qa_model_selector(all_models, filtered_count, key_prefix="chat")
+
+        st.markdown("---")
+        chat_eval_backend, chat_eval_model_name, chat_local_eval_model_name = _render_eval_settings(all_models, key_prefix="chat")
+        st.markdown("---")
 
         if "chat_eval_rows" not in st.session_state:
             st.session_state["chat_eval_rows"] = []
@@ -729,11 +736,11 @@ def main() -> None:
                 expected_answer=expected_answer,
                 compare_no_rag=compare_no_rag,
                 k=k_chat,
-                qa_models_selected=qa_models_selected,
+                qa_models_selected=chat_qa_models_selected,
                 all_models=all_models,
-                eval_backend=eval_backend,
-                eval_model_name=eval_model_name,
-                local_eval_model_name=local_eval_model_name,
+                eval_backend=chat_eval_backend,
+                eval_model_name=chat_eval_model_name,
+                local_eval_model_name=chat_local_eval_model_name,
                 openai_api_key=openai_api_key,
                 collection_name=collection_name,
             )
