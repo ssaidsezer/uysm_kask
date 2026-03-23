@@ -33,14 +33,45 @@ from pipeline import (
 from voice_utils import synthesize_speech, get_downloaded_tts_models
 
 
-def _list_ollama_models() -> tuple[List[str], str]:
+def _is_embedding_model(host: str, model_name: str) -> bool:
+    """
+    /api/show ile modelin embedding modeli olup olmadığını kontrol eder.
+    Embedding modelleri: template alanı boştur ve/veya model_info içinde
+    architecture olarak 'bert' vb. embedding mimarileri bulunur.
+    """
+    try:
+        resp = requests.post(
+            host.rstrip("/") + "/api/show",
+            json={"name": model_name},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception:
+        return False
+
+    template = (data.get("template") or "").strip()
+    if not template:
+        return True
+
+    model_info = data.get("model_info") or {}
+    arch = str(model_info.get("general.architecture", "")).lower()
+    if arch in ("bert", "nomic-bert"):
+        return True
+
+    return False
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _list_ollama_models() -> tuple[List[str], str, float, int]:
     """
     List models from the remote Ollama HTTP API (/api/tags).
-    OLLAMA_HOST must be set in .env — no localhost fallback.
+    Embedding modellerini /api/show ile filtreleyerek hariç tutar.
+    Dönüş: (modeller, hata_mesajı, filtreleme_süresi_sn, filtrelenen_model_sayısı)
     """
     host = os.environ.get("OLLAMA_HOST", "")
     if not host:
-        return [], "OLLAMA_HOST ortam değişkeni tanımlı değil. Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_HOST=192.168.1.151:11434)."
+        return [], "OLLAMA_HOST ortam değişkeni tanımlı değil. Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_HOST=192.168.1.151:11434).", 0.0, 0
 
     if not host.startswith("http"):
         host = f"http://{host}"
@@ -51,14 +82,26 @@ def _list_ollama_models() -> tuple[List[str], str]:
         resp.raise_for_status()
         data = resp.json() or {}
     except Exception:
-        return [], f"Uzak Ollama sunucusuna ({host}) bağlanılamadı. Lütfen sunucunun açık olduğundan ve ağ/güvenlik duvarı ayarlarının yapıldığından emin olun."
+        return [], f"Uzak Ollama sunucusuna ({host}) bağlanılamadı. Lütfen sunucunun açık olduğundan ve ağ/güvenlik duvarı ayarlarının yapıldığından emin olun.", 0.0, 0
 
-    models: List[str] = []
+    all_names: List[str] = []
     for item in data.get("models", []):
         name = item.get("name")
         if isinstance(name, str):
+            all_names.append(name)
+
+    import time
+    t0 = time.time()
+    models: List[str] = []
+    filtered_count = 0
+    for name in all_names:
+        if _is_embedding_model(host, name):
+            filtered_count += 1
+        else:
             models.append(name)
-    return models, ""
+    elapsed = round(time.time() - t0, 2)
+
+    return models, "", elapsed, filtered_count
 
 
 def _default_pdf_paths() -> List[Path]:
@@ -296,14 +339,16 @@ def main() -> None:
         st.markdown("---")
 
         # Modelleri yalnızca uzak Ollama sunucusundan listele
-        with st.spinner("Ollama modelleri listeleniyor..."):
-            ollama_models, connection_error = _list_ollama_models()
+        with st.spinner("Ollama modelleri listeleniyor (embedding modelleri filtreleniyor)..."):
+            ollama_models, connection_error, filter_elapsed, filtered_count = _list_ollama_models()
 
         if connection_error:
             st.error(connection_error)
             all_models = []
         else:
             all_models: List[str] = sorted({m for m in ollama_models if m})
+            if filtered_count > 0:
+                st.info(f"🔍 {filtered_count} embedding modeli filtrelendi ({filter_elapsed}s)")
             if not all_models:
                 st.warning("Ollama sunucusuna bağlanıldı ancak herhangi bir model bulunamadı.")
 

@@ -306,11 +306,8 @@ def evaluate_answer(
     msg = response.choices[0].message
 
     parsed: Dict
-    if hasattr(msg, "parsed") and msg.parsed is not None:
-        parsed = dict(msg.parsed)  # type: ignore[arg-type]
-    else:
-        content = msg.content or "{}"
-        parsed = json.loads(content)
+    content = msg.content or "{}"
+    parsed = json.loads(content)
 
     for k, v in list(parsed.items()):
         if isinstance(v, str):
