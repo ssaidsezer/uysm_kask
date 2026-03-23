@@ -186,6 +186,7 @@ def index_pdfs(
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
     qdrant_url: str = QDRANT_URL,
+    embed_model: str = OLLAMA_EMBED_MODEL,
     progress_callback=None,
 ) -> dict:
     """
@@ -238,7 +239,7 @@ def index_pdfs(
     all_embeddings: List[List[float]] = []
     for start in range(0, total_texts, EMBED_BATCH_SIZE):
         batch_texts = texts[start : start + EMBED_BATCH_SIZE]
-        batch_embeddings = get_embeddings(batch_texts)
+        batch_embeddings = get_embeddings(batch_texts, model=embed_model)
         all_embeddings.extend(batch_embeddings)
         elapsed = time.time() - t0
         done = min(start + EMBED_BATCH_SIZE, total_texts)

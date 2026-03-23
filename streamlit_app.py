@@ -104,6 +104,37 @@ def _list_ollama_models() -> tuple[List[str], str, float, int]:
     return models, "", elapsed, filtered_count
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _list_embedding_models() -> tuple[List[str], str]:
+    """
+    Uzak Ollama sunucusundan sadece embedding modellerini listeler.
+    Dönüş: (embedding_modeller, hata_mesajı)
+    """
+    host = os.environ.get("OLLAMA_HOST", "")
+    if not host:
+        return [], "OLLAMA_HOST ortam değişkeni tanımlı değil."
+
+    if not host.startswith("http"):
+        host = f"http://{host}"
+    url = host.rstrip("/") + "/api/tags"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception:
+        return [], f"Uzak Ollama sunucusuna ({host}) bağlanılamadı."
+
+    all_names: List[str] = [
+        item.get("name")
+        for item in data.get("models", [])
+        if isinstance(item.get("name"), str)
+    ]
+
+    embed_models = [name for name in all_names if _is_embedding_model(host, name)]
+    return embed_models, ""
+
+
 def _default_pdf_paths() -> List[Path]:
     candidates = [
         WORKSPACE_DIR / "askeri_egitim_kitabi.pdf",
@@ -302,6 +333,33 @@ def _run_chat_eval(
 def main() -> None:
     st.set_page_config(page_title="RAG Değerlendirme Pipeline", layout="wide")
 
+    # Selectbox dropdown stilini düzelt (koyu temada okunabilirlik)
+    st.markdown(
+        """
+        <style>
+        /* Dropdown listesi arka planı ve metin rengi */
+        div[data-baseweb="popover"] ul {
+            background-color: #1e1e1e;
+        }
+        div[data-baseweb="popover"] li {
+            color: #fafafa;
+        }
+        div[data-baseweb="popover"] li:hover {
+            background-color: #333333;
+        }
+        /* Seçili öğe vurgusu */
+        div[data-baseweb="popover"] li[aria-selected="true"] {
+            background-color: #404040;
+        }
+        /* Selectbox border rengini yumuşat */
+        div[data-baseweb="select"] > div {
+            border-color: #555555;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("RAG + Değerlendirme Pipeline")
     st.write(
         "PDF tabanlı Türkçe RAG sistemi: "
@@ -316,29 +374,33 @@ def main() -> None:
         qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
         collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
 
-        # Bağlantı durumu göstergesi
+        # ── Bağlantı Durumu ──
         st.markdown("---")
         st.markdown("**Bağlantı Durumu**")
-        # Qdrant
+
+        qdrant_ok = False
         try:
             resp = requests.get(f"{qdrant_url}/collections", timeout=5)
             resp.raise_for_status()
-            st.success(f"✅ Qdrant bağlı ({qdrant_url})")
+            qdrant_ok = True
+            st.success(f"Qdrant bağlı ({qdrant_url})")
         except Exception:
-            st.error(f"❌ Qdrant erişilemiyor ({qdrant_url})")
+            st.error(f"Qdrant erişilemiyor ({qdrant_url})")
 
-        # Ollama
+        ollama_ok = False
         ollama_base = os.environ.get("OLLAMA_BASE_URL", "")
         if ollama_base:
             try:
                 resp = requests.get(f"{ollama_base.rstrip('/')}/api/tags", timeout=5)
                 resp.raise_for_status()
-                st.success(f"✅ Ollama bağlı ({ollama_base})")
+                ollama_ok = True
+                st.success(f"Ollama bağlı ({ollama_base})")
             except Exception:
-                st.error(f"❌ Ollama erişilemiyor ({ollama_base})")
+                st.error(f"Ollama erişilemiyor ({ollama_base})")
+
+        # ── Model Seçimi ──
         st.markdown("---")
 
-        # Modelleri yalnızca uzak Ollama sunucusundan listele
         with st.spinner("Ollama modelleri listeleniyor (embedding modelleri filtreleniyor)..."):
             ollama_models, connection_error, filter_elapsed, filtered_count = _list_ollama_models()
 
@@ -347,49 +409,71 @@ def main() -> None:
             all_models = []
         else:
             all_models: List[str] = sorted({m for m in ollama_models if m})
-            if filtered_count > 0:
-                st.info(f"🔍 {filtered_count} embedding modeli filtrelendi ({filter_elapsed}s)")
             if not all_models:
                 st.warning("Ollama sunucusuna bağlanıldı ancak herhangi bir model bulunamadı.")
 
-        # Değerlendirilecek QA modelleri
+        # Arama değerini session state'ten al (text_input widget'ı daha render edilmeden
+        # önce de doğru değeri verir, çünkü Streamlit widget değerlerini session state'te saklar)
+        search_value = st.session_state.get("qa_model_search", "")
+        if search_value:
+            filtered_models = [m for m in all_models if search_value.lower() in m.lower()]
+        else:
+            filtered_models = all_models
+
+        # Callback'ler script body'den önce çalışır → selected_count doğru hesaplanır
+        def _qa_select_all():
+            for m in st.session_state.get("_qa_filtered_models", []):
+                st.session_state[f"qa_model_select_{m}"] = True
+
+        def _qa_deselect_all():
+            for m in st.session_state.get("_qa_filtered_models", []):
+                st.session_state[f"qa_model_select_{m}"] = False
+
+        st.session_state["_qa_filtered_models"] = filtered_models
+
+        # Seçili model sayısını hesapla (expander başlığı için)
+        selected_count = sum(
+            1 for m in all_models
+            if st.session_state.get(f"qa_model_select_{m}", False)
+        )
+        expander_label = f"Modelleri göster ({selected_count}/{len(all_models)} seçili)"
+        if filtered_count > 0:
+            expander_label += f" · {filtered_count} embedding filtrelendi"
+
         st.markdown("**Değerlendirilecek QA modelleri**")
 
+        # Expander açık/kapalı durumunu session state'te tut
+        if "qa_expander_open" not in st.session_state:
+            st.session_state["qa_expander_open"] = False
+
         qa_models_selected: List[str] = []
-        with st.expander("Modelleri göster", expanded=False):
-            qa_model_search = st.text_input(
+        with st.expander(expander_label, expanded=st.session_state["qa_expander_open"]):
+            # Expander açıldıysa açık kalsın (checkbox tıklamalarında kapanmasın)
+            st.session_state["qa_expander_open"] = True
+
+            st.text_input(
                 "Model ara",
-                value=st.session_state.get("qa_model_search", ""),
                 placeholder="Model adında ara...",
                 key="qa_model_search",
             )
 
-            search_value = st.session_state.get("qa_model_search", "")
-            if search_value:
-                filtered_models = [
-                    m for m in all_models if search_value.lower() in m.lower()
-                ]
-            else:
-                filtered_models = all_models
-
             col_sel_all, col_desel_all = st.columns(2)
             with col_sel_all:
-                if st.button("Hepsini seç", key="qa_select_all"):
-                    for m in filtered_models:
-                        st.session_state[f"qa_model_select_{m}"] = True
+                st.button("Hepsini seç", key="qa_select_all", on_click=_qa_select_all)
             with col_desel_all:
-                if st.button("Hepsini kaldır", key="qa_deselect_all"):
-                    for m in filtered_models:
-                        st.session_state[f"qa_model_select_{m}"] = False
+                st.button("Hepsini kaldır", key="qa_deselect_all", on_click=_qa_deselect_all)
 
             for model_name in filtered_models:
                 if st.checkbox(
                     model_name,
-                    value=st.session_state.get(f"qa_model_select_{model_name}", True),
+                    value=st.session_state.get(f"qa_model_select_{model_name}", False),
                     key=f"qa_model_select_{model_name}",
                     help="Bu modeli RAG değerlendirmesine dahil et.",
                 ):
                     qa_models_selected.append(model_name)
+
+        # ── Değerlendirme Motoru ──
+        st.markdown("---")
 
         eval_backend = st.selectbox(
             "Değerlendirme motoru",
@@ -424,17 +508,8 @@ def main() -> None:
     with tab_index:
         st.subheader("PDF'leri Qdrant'a indeksle (Ollama Embedding)")
 
-        default_pdfs = _default_pdf_paths()
-        use_default = False
-        if default_pdfs:
-            use_default = st.checkbox(
-                "Varsayılan PDF'leri kullan",
-                value=True,
-                help=", ".join(str(p.name) for p in default_pdfs),
-            )
-
         uploaded_pdfs = st.file_uploader(
-            "Ek PDF yükle (isteğe bağlı)",
+            "PDF yükle",
             type=["pdf"],
             accept_multiple_files=True,
         )
@@ -442,14 +517,29 @@ def main() -> None:
         chunk_size = int(os.environ.get("CHUNK_SIZE", "1000"))
         chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "200"))
 
-        embed_model_name = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        with st.spinner("Embedding modelleri yükleniyor..."):
+            embed_models, embed_err = _list_embedding_models()
+
+        default_embed = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        if embed_err:
+            st.warning(f"Embedding modelleri listelenemedi: {embed_err}")
+            embed_model_name = default_embed
+        elif not embed_models:
+            st.warning("Sunucuda embedding modeli bulunamadı. Varsayılan kullanılıyor.")
+            embed_model_name = default_embed
+        else:
+            default_index = embed_models.index(default_embed) if default_embed in embed_models else 0
+            embed_model_name = st.selectbox(
+                "Embedding modeli",
+                options=embed_models,
+                index=default_index,
+                help="PDF'leri indekslemek için kullanılacak Ollama embedding modeli.",
+            )
+
         st.info(f"Embedding modeli: **{embed_model_name}** (Ollama) | Koleksiyon: **{collection_name}** | Qdrant: **{qdrant_url}**")
 
         if st.button("İndeksi oluştur / güncelle"):
             pdf_paths: List[Path] = []
-
-            if use_default:
-                pdf_paths.extend(default_pdfs)
 
             if uploaded_pdfs:
                 tmp_dir = _ensure_tmp_dir()
@@ -499,6 +589,7 @@ def main() -> None:
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
                         qdrant_url=qdrant_url,
+                        embed_model=embed_model_name,
                         progress_callback=on_progress,
                     )
 

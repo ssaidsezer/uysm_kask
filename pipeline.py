@@ -19,7 +19,7 @@ from rag_index import (
 
 QA_OLLAMA_MODEL = os.getenv("QA_OLLAMA_MODEL", "qwen3:1.7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
-EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4o-mini")
+EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4.1-mini")
 
 
 def load_questions(csv_path: str) -> List[Dict]:
