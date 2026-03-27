@@ -488,6 +488,7 @@ def run_full_pipeline(
     eval_local_model: Optional[str] = None,
     qa_model: str = QA_OLLAMA_MODEL,
     rag_mode: str = "rag",
+    eval_enabled: bool = True,
 ) -> List[Dict]:
     """
     High-level helper:
@@ -503,7 +504,7 @@ def run_full_pipeline(
         return []
 
     eval_backend = (eval_backend or "openai").lower()
-    if eval_backend == "openai" and openai_client is None:
+    if eval_enabled and eval_backend == "openai" and openai_client is None:
         openai_client = get_openai_client()
 
     rows: List[Dict] = []
@@ -522,7 +523,7 @@ def run_full_pipeline(
                 k=k,
                 qdrant_url=qdrant_url,
             )
-            context = "\n\n".join(chunks)
+            context = "\n\n".join(c["text"] for c in chunks)
             rag_result = generate_rag_answer_ollama(
                 question=question,
                 context=context,
@@ -536,15 +537,18 @@ def run_full_pipeline(
                 "model_answer": rag_result.get("answer", ""),
                 "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
             }
-            eval_row = evaluate_answer_any(
-                record=record,
-                eval_model=eval_model,
-                client=openai_client if eval_backend == "openai" else None,
-                backend=eval_backend,
-                local_model=eval_local_model,
-            )
+            if eval_enabled:
+                eval_row = evaluate_answer_any(
+                    record=record,
+                    eval_model=eval_model,
+                    client=openai_client if eval_backend == "openai" else None,
+                    backend=eval_backend,
+                    local_model=eval_local_model,
+                )
+            else:
+                eval_row = {**record}
             eval_row["rag_type"] = "RAG'li"
-            eval_row["retrieved_chunks"] = json.dumps(chunks, ensure_ascii=False)
+            eval_row["retrieved_chunks"] = json.dumps([c["text"] for c in chunks], ensure_ascii=False)
             rows.append(eval_row)
 
         # --- RAG'siz ---
@@ -561,13 +565,16 @@ def run_full_pipeline(
                 "model_answer": no_rag_result.get("answer", ""),
                 "response_time_seconds": no_rag_result.get("response_time_seconds", 0.0),
             }
-            eval_row = evaluate_answer_any(
-                record=record,
-                eval_model=eval_model,
-                client=openai_client if eval_backend == "openai" else None,
-                backend=eval_backend,
-                local_model=eval_local_model,
-            )
+            if eval_enabled:
+                eval_row = evaluate_answer_any(
+                    record=record,
+                    eval_model=eval_model,
+                    client=openai_client if eval_backend == "openai" else None,
+                    backend=eval_backend,
+                    local_model=eval_local_model,
+                )
+            else:
+                eval_row = {**record}
             eval_row["rag_type"] = "RAG'siz"
             eval_row["retrieved_chunks"] = ""
             rows.append(eval_row)

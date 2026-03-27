@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ from rag_index import (
     DEFAULT_COLLECTION_NAME,
     QDRANT_URL,
     index_pdfs,
-    retrieve_context,
+    retrieve_chunks,
 )
 from pipeline import (
     QA_OLLAMA_MODEL,
@@ -34,11 +35,19 @@ from pipeline import (
 from voice_utils import synthesize_speech, get_downloaded_tts_models
 
 
+def _collection_name_for_model(base: str, embed_model: str) -> str:
+    """Embedding modeline özgü collection adı üretir. bge-m3:latest → {base}_bge-m3_latest"""
+    safe = embed_model.replace(":", "_").replace("/", "_").replace(".", "_")
+    return f"{base}_{safe}"
+
+
 def _is_embedding_model(host: str, model_name: str) -> bool:
     """
     /api/show ile modelin embedding modeli olup olmadığını kontrol eder.
-    Embedding modelleri: template alanı boştur ve/veya model_info içinde
-    architecture olarak 'bert' vb. embedding mimarileri bulunur.
+    Öncelik sırası:
+      1. capabilities listesinde "embedding" varsa → kesinlikle embedding modeli
+      2. Model adında "embed" veya "bge" geçiyorsa → embedding modeli
+      3. template alanı boşsa → embedding modeli (eski Ollama sürümleri)
     """
     try:
         resp = requests.post(
@@ -51,10 +60,17 @@ def _is_embedding_model(host: str, model_name: str) -> bool:
     except Exception:
         return False
 
-    # Model adında "embed" geçiyorsa doğrudan embedding say
-    if "embed" in model_name.lower():
+    # 1. Yeni Ollama (0.4+): capabilities alanı varsa ona güven
+    capabilities = data.get("capabilities") or []
+    if capabilities:
+        return "embedding" in capabilities
+
+    # 2. İsim bazlı fallback
+    name_lower = model_name.lower()
+    if any(kw in name_lower for kw in ("embed", "bge", "e5", "gte", "rerank")):
         return True
 
+    # 3. Template boşsa embedding modeli say (eski Ollama sürümleri)
     template = (data.get("template") or "").strip()
     if not template:
         return True
@@ -164,18 +180,20 @@ def _run_chat_eval(
     k: int,
     qa_models_selected: List[str],
     all_models: List[str],
+    eval_enabled: bool,
     eval_backend: str,
     eval_model_name: str,
     local_eval_model_name: str | None,
     openai_api_key: str,
     collection_name: str,
+    embed_model: str = "",
 ) -> List[dict]:
     """Run RAG (and optionally no-RAG) QA + evaluation for given models.
 
     Displays results via Streamlit and appends to session state.
     Returns list of result dicts containing 'model_answer' for TTS.
     """
-    if eval_backend == "OpenAI":
+    if eval_enabled and eval_backend == "OpenAI":
         if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
             st.error(
                 "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli "
@@ -186,11 +204,39 @@ def _run_chat_eval(
     else:
         openai_client = None
 
-    context = retrieve_context(
-        question=question,
-        collection_name=collection_name,
-        k=int(k),
-    )
+    retrieved_chunks_list: List[dict] = []
+    context = ""
+    if rag_mode in ("rag", "both"):
+        retrieved_chunks_list = retrieve_chunks(
+            question=question,
+            collection_name=collection_name,
+            k=int(k),
+            embed_model=embed_model or None,
+        )
+        context = "\n\n".join(c["text"] for c in retrieved_chunks_list)
+
+    # --- Chunk kartları (modelden bağımsız, bir kez göster) ---
+    if rag_mode in ("rag", "both") and retrieved_chunks_list:
+        st.markdown("**Retrieved Chunks**")
+        chunk_cols = st.columns(4)
+        for i, chunk in enumerate(retrieved_chunks_list):
+            score = chunk["score"]
+            score_color = "#4caf50" if score >= 0.6 else "#ff9800" if score >= 0.4 else "#f44336"
+            with chunk_cols[i % 4]:
+                st.markdown(
+                    f"""<div style="border:1px solid #444;border-radius:8px;padding:10px;margin-bottom:8px;font-size:0.78rem;height:160px;overflow-y:auto;background:#1e1e1e;position:relative;">
+                    <b style="color:#aaa;">Chunk {i + 1}</b><br><br>{chunk["text"]}
+                    <div style="position:sticky;bottom:0;text-align:right;margin-top:6px;">
+                        <span style="background:#2a2a2a;border-radius:4px;padding:2px 6px;font-size:0.72rem;color:{score_color};font-weight:bold;">
+                            {score:.3f}
+                        </span>
+                    </div></div>""",
+                    unsafe_allow_html=True,
+                )
+    elif rag_mode in ("rag", "both"):
+        st.caption("Qdrant'tan alınan herhangi bir chunk bulunamadı.")
+
+    st.divider()
 
     run_timestamp = datetime.utcnow().isoformat()
     selected_models = qa_models_selected or all_models
@@ -198,15 +244,16 @@ def _run_chat_eval(
 
     for qa_model_name in selected_models:
         warmup_model(model=qa_model_name)
-        st.markdown(f"**Model: {qa_model_name}**")
-        cols = st.columns(2) if rag_mode == "both" else [st.container()]
 
-        # --- RAG'li cevap ---
+        st.markdown(f"### {qa_model_name}")
+
+        rag_record = rag_result = rag_eval = None
+        no_rag_record = no_rag_result = no_rag_eval = None
+
+        # --- RAG'li cevap üret ---
         if rag_mode in ("rag", "both"):
             try:
-                with st.spinner(
-                    f"{qa_model_name} için RAG'li cevap üretiliyor ve değerlendiriliyor..."
-                ):
+                with st.spinner(f"{qa_model_name} — RAG'li cevap üretiliyor..."):
                     rag_result = generate_rag_answer_ollama(
                         question=question,
                         context=context,
@@ -220,50 +267,24 @@ def _run_chat_eval(
                         "model_answer": rag_result.get("answer", ""),
                         "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
                     }
-                    rag_eval = evaluate_answer_any(
-                        record=rag_record,
-                        eval_model=eval_model_name,
-                        client=openai_client,
-                        backend="openai" if eval_backend == "OpenAI" else "ollama",
-                        local_model=local_eval_model_name,
-                    )
+                    if eval_enabled:
+                        rag_eval = evaluate_answer_any(
+                            record=rag_record,
+                            eval_model=eval_model_name,
+                            client=openai_client,
+                            backend="openai" if eval_backend == "OpenAI" else "ollama",
+                            local_model=local_eval_model_name,
+                        )
+                    else:
+                        rag_eval = {}
             except Exception as exc:
-                st.error(
-                    f"{qa_model_name} için RAG'li çağrıda hata oluştu ve model atlandı: {exc}"
-                )
+                st.error(f"{qa_model_name} için RAG'li çağrıda hata oluştu ve model atlandı: {exc}")
                 continue
 
-            with cols[0]:
-                st.markdown("**RAG'li cevap (Ollama)**")
-                st.write(rag_record["model_answer"])
-                st.markdown("**RAG'li cevap eval**")
-                st.json(rag_eval)
-
-            st.session_state.setdefault("chat_eval_rows", []).append(
-                {
-                    "timestamp": run_timestamp,
-                    "model": qa_model_name,
-                    "mode": "RAG",
-                    "question": question,
-                    "expected_answer": (expected_answer or "").strip(),
-                    "model_answer": rag_record["model_answer"],
-                    "response_time_seconds": rag_record["response_time_seconds"],
-                    "tokens_per_second": rag_result.get("tokens_per_second") or "",
-                    "ai_score": rag_eval.get("ai_score", ""),
-                    "ai_verdict": rag_eval.get("ai_verdict", ""),
-                    "ai_hallucination_risk": rag_eval.get("ai_hallucination_risk", ""),
-                }
-            )
-            answers.append(
-                {"model": qa_model_name, "mode": "RAG", "answer": rag_record["model_answer"]}
-            )
-
-        # --- RAG'siz cevap ---
+        # --- RAG'siz cevap üret ---
         if rag_mode in ("no_rag", "both"):
             try:
-                with st.spinner(
-                    f"{qa_model_name} için RAG'siz cevap üretiliyor ve değerlendiriliyor..."
-                ):
+                with st.spinner(f"{qa_model_name} — RAG'siz cevap üretiliyor..."):
                     no_rag_result = generate_no_rag_answer_ollama(
                         question=question,
                         model=qa_model_name,
@@ -276,25 +297,67 @@ def _run_chat_eval(
                         "model_answer": no_rag_result.get("answer", ""),
                         "response_time_seconds": no_rag_result.get("response_time_seconds", 0.0),
                     }
-                    no_rag_eval = evaluate_answer_any(
-                        record=no_rag_record,
-                        eval_model=eval_model_name,
-                        client=openai_client,
-                        backend="openai" if eval_backend == "OpenAI" else "ollama",
-                        local_model=local_eval_model_name,
-                    )
+                    if eval_enabled:
+                        no_rag_eval = evaluate_answer_any(
+                            record=no_rag_record,
+                            eval_model=eval_model_name,
+                            client=openai_client,
+                            backend="openai" if eval_backend == "OpenAI" else "ollama",
+                            local_model=local_eval_model_name,
+                        )
+                    else:
+                        no_rag_eval = {}
             except Exception as exc:
-                st.error(
-                    f"{qa_model_name} için RAG'siz çağrıda hata oluştu ve bu mod atlandı: {exc}"
-                )
+                st.error(f"{qa_model_name} için RAG'siz çağrıda hata oluştu ve bu mod atlandı: {exc}")
                 continue
 
-            with cols[1] if rag_mode == "both" else cols[0]:
-                st.markdown("**RAG'siz cevap (Ollama)**")
-                st.write(no_rag_record["model_answer"])
-                st.markdown("**RAG'siz cevap eval**")
-                st.json(no_rag_eval)
+        # --- Her model için hizalanmış kolon render ---
+        if rag_mode == "both":
+            rag_col, no_rag_col = st.columns(2)
+            with rag_col:
+                st.markdown("**RAG'li**")
+                st.markdown(rag_record["model_answer"])
+                if eval_enabled:
+                    with st.expander("Eval"):
+                        st.json(rag_eval)
+            with no_rag_col:
+                st.markdown("**RAG'siz**")
+                st.markdown(no_rag_record["model_answer"])
+                if eval_enabled:
+                    with st.expander("Eval"):
+                        st.json(no_rag_eval)
+        elif rag_mode == "rag" and rag_record:
+            st.markdown(rag_record["model_answer"])
+            if eval_enabled:
+                with st.expander("Eval"):
+                    st.json(rag_eval)
+        elif rag_mode == "no_rag" and no_rag_record:
+            st.markdown(no_rag_record["model_answer"])
+            if eval_enabled:
+                with st.expander("Eval"):
+                    st.json(no_rag_eval)
 
+        # --- Session state kayıt ---
+        if rag_record:
+            st.session_state.setdefault("chat_eval_rows", []).append(
+                {
+                    "timestamp": run_timestamp,
+                    "model": qa_model_name,
+                    "mode": "RAG",
+                    "question": question,
+                    "expected_answer": (expected_answer or "").strip(),
+                    "model_answer": rag_record["model_answer"],
+                    "response_time_seconds": rag_record["response_time_seconds"],
+                    "tokens_per_second": rag_result.get("tokens_per_second") or "",
+                    "ai_score": (rag_eval or {}).get("ai_score", ""),
+                    "ai_verdict": (rag_eval or {}).get("ai_verdict", ""),
+                    "ai_hallucination_risk": (rag_eval or {}).get("ai_hallucination_risk", ""),
+                    "retrieved_chunks": json.dumps([c["text"] for c in retrieved_chunks_list], ensure_ascii=False),
+                }
+            )
+            answers.append({"model": qa_model_name, "mode": "RAG", "answer": rag_record["model_answer"]})
+
+        if no_rag_record:
             st.session_state.setdefault("chat_eval_rows", []).append(
                 {
                     "timestamp": run_timestamp,
@@ -305,14 +368,15 @@ def _run_chat_eval(
                     "model_answer": no_rag_record["model_answer"],
                     "response_time_seconds": no_rag_record["response_time_seconds"],
                     "tokens_per_second": no_rag_result.get("tokens_per_second") or "",
-                    "ai_score": no_rag_eval.get("ai_score", ""),
-                    "ai_verdict": no_rag_eval.get("ai_verdict", ""),
-                    "ai_hallucination_risk": no_rag_eval.get("ai_hallucination_risk", ""),
+                    "ai_score": (no_rag_eval or {}).get("ai_score", ""),
+                    "ai_verdict": (no_rag_eval or {}).get("ai_verdict", ""),
+                    "ai_hallucination_risk": (no_rag_eval or {}).get("ai_hallucination_risk", ""),
+                    "retrieved_chunks": "[]",
                 }
             )
-            answers.append(
-                {"model": qa_model_name, "mode": "NO_RAG", "answer": no_rag_record["model_answer"]}
-            )
+            answers.append({"model": qa_model_name, "mode": "NO_RAG", "answer": no_rag_record["model_answer"]})
+
+        st.divider()
 
     return answers
 
@@ -411,8 +475,17 @@ def _render_qa_model_selector(all_models: List[str], filtered_count: int, key_pr
 
 
 def _render_eval_settings(all_models: List[str], key_prefix: str):
-    """Değerlendirme motoru ayarlarını render eder. (eval_backend, eval_model_name, local_eval_model_name) döndürür."""
-    col_backend, col_model = st.columns(2)
+    """Değerlendirme motoru ayarlarını render eder. (eval_enabled, eval_backend, eval_model_name, local_eval_model_name) döndürür."""
+    col_toggle, col_backend, col_model = st.columns([1, 2, 2])
+    with col_toggle:
+        eval_enabled = st.toggle(
+            "Değerlendir",
+            value=True,
+            key=f"{key_prefix}_eval_enabled",
+            help="Kapalıysa cevaplar üretilir fakat AI değerlendirmesi yapılmaz.",
+        )
+    if not eval_enabled:
+        return False, "OpenAI", EVAL_MODEL_NAME, None
     with col_backend:
         eval_backend = st.selectbox(
             "Değerlendirme motoru",
@@ -441,7 +514,7 @@ def _render_eval_settings(all_models: List[str], key_prefix: str):
             key=f"{key_prefix}_local_eval_model",
             help="Eval için kullanılacak yerel Ollama modelini seç.",
         )
-    return eval_backend, eval_model_name, local_eval_model_name
+    return True, eval_backend, eval_model_name, local_eval_model_name
 
 
 def main() -> None:
@@ -533,14 +606,12 @@ def main() -> None:
         with st.spinner("Embedding modelleri yükleniyor..."):
             embed_models, embed_err = _list_embedding_models()
 
-        default_embed = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-        if embed_err:
-            st.warning(f"Embedding modelleri listelenemedi: {embed_err}")
-            embed_model_name = default_embed
-        elif not embed_models:
-            st.warning("Sunucuda embedding modeli bulunamadı. Varsayılan kullanılıyor.")
-            embed_model_name = default_embed
+        if embed_err or not embed_models:
+            msg = embed_err or "Sunucuda hiç embedding modeli bulunamadı."
+            st.error(f"Embedding modelleri yüklenemedi: {msg} Ollama bağlantısını kontrol et.")
+            st.stop()
         else:
+            default_embed = os.environ.get("OLLAMA_EMBED_MODEL", "")
             default_index = embed_models.index(default_embed) if default_embed in embed_models else 0
             embed_model_name = st.selectbox(
                 "Embedding modeli",
@@ -549,7 +620,8 @@ def main() -> None:
                 help="PDF'leri indekslemek için kullanılacak Ollama embedding modeli.",
             )
 
-        st.info(f"Embedding modeli: **{embed_model_name}** (Ollama) | Koleksiyon: **{collection_name}** | Qdrant: **{qdrant_url}**")
+        index_collection_name = _collection_name_for_model(collection_name, embed_model_name)
+        st.info(f"Embedding modeli: **{embed_model_name}** (Ollama) | Koleksiyon: **{index_collection_name}** | Qdrant: **{qdrant_url}**")
 
         if st.button("İndeksi oluştur / güncelle"):
             pdf_paths: List[Path] = []
@@ -598,7 +670,7 @@ def main() -> None:
 
                     result = index_pdfs(
                         [str(p) for p in pdf_paths],
-                        collection_name=collection_name,
+                        collection_name=index_collection_name,
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
                         qdrant_url=qdrant_url,
@@ -619,7 +691,7 @@ def main() -> None:
                     col3.metric("Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
                     col4.metric("Toplam", f"{result['total_sec']}s")
 
-                    st.write("Koleksiyon:", collection_name)
+                    st.write("Koleksiyon:", index_collection_name)
                 except Exception as exc:
                     st.error(f"İndeksleme sırasında hata oluştu: {exc}")
 
@@ -635,7 +707,7 @@ def main() -> None:
         qa_models_selected = _render_qa_model_selector(all_models, filtered_count, key_prefix="csv")
 
         st.markdown("---")
-        eval_backend, eval_model_name, local_eval_model_name = _render_eval_settings(all_models, key_prefix="csv")
+        eval_enabled, eval_backend, eval_model_name, local_eval_model_name = _render_eval_settings(all_models, key_prefix="csv")
         st.markdown("---")
 
         uploaded_csv = st.file_uploader(
@@ -650,6 +722,19 @@ def main() -> None:
                 "Varsayılan örnek CSV'yi kullan (sample_rag_input.csv)",
                 value=not uploaded_csv,
             )
+
+        with st.spinner("Embedding modelleri yükleniyor..."):
+            csv_embed_models, csv_embed_err = _list_embedding_models()
+        if not csv_embed_models:
+            st.error("Embedding modelleri yüklenemedi. Ollama bağlantısını kontrol et.")
+            st.stop()
+        csv_embed_model = st.selectbox(
+            "Embedding modeli (indexleme ile aynı olmalı)",
+            options=csv_embed_models,
+            key="csv_embed_model",
+        )
+        csv_collection_name = _collection_name_for_model(collection_name, csv_embed_model)
+        st.caption(f"Kullanılacak koleksiyon: **{csv_collection_name}**")
 
         col_k, col_rag_mode = st.columns(2)
         with col_rag_mode:
@@ -686,7 +771,7 @@ def main() -> None:
                 st.error("CSV seçilmedi.")
                 return
 
-            if eval_backend == "OpenAI":
+            if eval_enabled and eval_backend == "OpenAI":
                 if not openai_api_key and not os.environ.get("OPENAI_API_KEY"):
                     st.error(
                         "OpenAI değerlendirme motoru seçili. OpenAI API key gerekli."
@@ -704,7 +789,7 @@ def main() -> None:
                     with st.spinner(f"Pipeline çalışıyor: {qa_model} ({rag_mode_label})..."):
                         model_rows = run_full_pipeline(
                             csv_path=str(csv_path),
-                            collection_name=collection_name,
+                            collection_name=csv_collection_name,
                             qdrant_url=qdrant_url,
                             eval_model=eval_model_name,
                             k=int(k),
@@ -713,6 +798,7 @@ def main() -> None:
                             eval_local_model=local_eval_model_name,
                             qa_model=qa_model,
                             rag_mode=rag_mode,
+                            eval_enabled=eval_enabled,
                         )
                         rows.extend(model_rows)
                 except Exception as exc:
@@ -743,17 +829,51 @@ def main() -> None:
     # TAB 3: Manuel Chat Eval
     # =========================================================================
     with tab_chat:
-        st.subheader("Manuel soru sor ve RAG vs RAG'siz karşılaştır")
-
-        st.markdown("**Değerlendirilecek QA modelleri**")
+        # --- Model seçici ---
         if connection_error:
             st.error(connection_error)
         chat_qa_models_selected = _render_qa_model_selector(all_models, filtered_count, key_prefix="chat")
 
-        st.markdown("---")
-        chat_eval_backend, chat_eval_model_name, chat_local_eval_model_name = _render_eval_settings(all_models, key_prefix="chat")
-        st.markdown("---")
+        # --- Kompakt ayarlar satırı ---
+        with st.container(border=True):
+            col_eval, col_embed, col_mode = st.columns([3, 2, 2])
 
+            with col_eval:
+                chat_eval_enabled, chat_eval_backend, chat_eval_model_name, chat_local_eval_model_name = _render_eval_settings(all_models, key_prefix="chat")
+
+            with col_embed:
+                with st.spinner(""):
+                    chat_embed_models, _ = _list_embedding_models()
+                if not chat_embed_models:
+                    st.error("Embedding modelleri yüklenemedi. Ollama bağlantısını kontrol et.")
+                    st.stop()
+                chat_embed_model = st.selectbox(
+                    "Embedding modeli",
+                    options=chat_embed_models,
+                    key="chat_embed_model",
+                )
+                chat_collection_name = _collection_name_for_model(collection_name, chat_embed_model)
+                st.caption(f"Koleksiyon: `{chat_collection_name}`")
+
+            with col_mode:
+                chat_rag_mode_label = st.radio(
+                    "Cevaplama modu",
+                    options=["RAG'li", "RAG'siz", "İkisi birden"],
+                    horizontal=False,
+                    key="chat_rag_mode",
+                )
+                k_chat = st.number_input(
+                    "Context chunk sayısı (k)",
+                    min_value=1,
+                    max_value=20,
+                    value=5,
+                    key="chat_k",
+                )
+
+        chat_rag_mode_map = {"RAG'li": "rag", "RAG'siz": "no_rag", "İkisi birden": "both"}
+        chat_rag_mode = chat_rag_mode_map[chat_rag_mode_label]
+
+        # --- Soru alanı ---
         if "chat_eval_rows" not in st.session_state:
             st.session_state["chat_eval_rows"] = []
 
@@ -762,32 +882,16 @@ def main() -> None:
             question = st.text_area(
                 "Soru",
                 placeholder="Buraya modelden cevap almak istediğin soruyu yaz...",
-                height=120,
+                height=150,
             )
         with col_ref:
             expected_answer = st.text_area(
-                "İsteğe bağlı: Beklenen / referans cevap",
-                placeholder="Eval sırasında kıyaslamak için isteğe bağlı olarak doğru cevabı yazabilirsin.",
-                height=120,
+                "Beklenen / referans cevap (isteğe bağlı)",
+                placeholder="Eval sırasında kıyaslamak için doğru cevabı yazabilirsin.",
+                height=150,
             )
 
-        chat_rag_mode_label = st.radio(
-            "Cevaplama modu",
-            options=["RAG'li", "RAG'siz", "İkisi birden"],
-            horizontal=True,
-            key="chat_rag_mode",
-        )
-        chat_rag_mode_map = {"RAG'li": "rag", "RAG'siz": "no_rag", "İkisi birden": "both"}
-        chat_rag_mode = chat_rag_mode_map[chat_rag_mode_label]
-
-        k_chat = st.number_input(
-            "RAG için alınacak context chunk sayısı (k)",
-            min_value=1,
-            max_value=20,
-            value=5,
-        )
-
-        if st.button("Soruyu değerlendir"):
+        if st.button("Soruyu değerlendir", type="primary", use_container_width=True):
             if not question.strip():
                 st.error("Lütfen bir soru gir.")
                 return
@@ -799,11 +903,13 @@ def main() -> None:
                 k=k_chat,
                 qa_models_selected=chat_qa_models_selected,
                 all_models=all_models,
+                eval_enabled=chat_eval_enabled,
                 eval_backend=chat_eval_backend,
                 eval_model_name=chat_eval_model_name,
                 local_eval_model_name=chat_local_eval_model_name,
                 openai_api_key=openai_api_key,
-                collection_name=collection_name,
+                collection_name=chat_collection_name,
+                embed_model=chat_embed_model,
             )
 
         # Manuel chat logunu CSV olarak indirme
