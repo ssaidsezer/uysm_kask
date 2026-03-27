@@ -35,11 +35,19 @@ from pipeline import (
 from voice_utils import synthesize_speech, get_downloaded_tts_models
 
 
+def _collection_name_for_model(base: str, embed_model: str) -> str:
+    """Embedding modeline özgü collection adı üretir. bge-m3:latest → {base}_bge-m3_latest"""
+    safe = embed_model.replace(":", "_").replace("/", "_").replace(".", "_")
+    return f"{base}_{safe}"
+
+
 def _is_embedding_model(host: str, model_name: str) -> bool:
     """
     /api/show ile modelin embedding modeli olup olmadığını kontrol eder.
-    Embedding modelleri: template alanı boştur ve/veya model_info içinde
-    architecture olarak 'bert' vb. embedding mimarileri bulunur.
+    Öncelik sırası:
+      1. capabilities listesinde "embedding" varsa → kesinlikle embedding modeli
+      2. Model adında "embed" veya "bge" geçiyorsa → embedding modeli
+      3. template alanı boşsa → embedding modeli (eski Ollama sürümleri)
     """
     try:
         resp = requests.post(
@@ -52,10 +60,17 @@ def _is_embedding_model(host: str, model_name: str) -> bool:
     except Exception:
         return False
 
-    # Model adında "embed" geçiyorsa doğrudan embedding say
-    if "embed" in model_name.lower():
+    # 1. Yeni Ollama (0.4+): capabilities alanı varsa ona güven
+    capabilities = data.get("capabilities") or []
+    if capabilities:
+        return "embedding" in capabilities
+
+    # 2. İsim bazlı fallback
+    name_lower = model_name.lower()
+    if any(kw in name_lower for kw in ("embed", "bge", "e5", "gte", "rerank")):
         return True
 
+    # 3. Template boşsa embedding modeli say (eski Ollama sürümleri)
     template = (data.get("template") or "").strip()
     if not template:
         return True
@@ -170,6 +185,7 @@ def _run_chat_eval(
     local_eval_model_name: str | None,
     openai_api_key: str,
     collection_name: str,
+    embed_model: str = "",
 ) -> List[dict]:
     """Run RAG (and optionally no-RAG) QA + evaluation for given models.
 
@@ -187,24 +203,64 @@ def _run_chat_eval(
     else:
         openai_client = None
 
-    retrieved_chunks_list: List[str] = []
+    retrieved_chunks_list: List[dict] = []
     context = ""
     if rag_mode in ("rag", "both"):
         retrieved_chunks_list = retrieve_chunks(
             question=question,
             collection_name=collection_name,
             k=int(k),
+            embed_model=embed_model or None,
         )
-        context = "\n\n".join(retrieved_chunks_list)
+        context = "\n\n".join(c["text"] for c in retrieved_chunks_list)
+
+    # --- Chunk kartları (modelden bağımsız, bir kez göster) ---
+    if rag_mode in ("rag", "both") and retrieved_chunks_list:
+        st.markdown("**Retrieved Chunks**")
+        chunk_cols = st.columns(4)
+        for i, chunk in enumerate(retrieved_chunks_list):
+            score = chunk["score"]
+            score_color = "#4caf50" if score >= 0.6 else "#ff9800" if score >= 0.4 else "#f44336"
+            with chunk_cols[i % 4]:
+                st.markdown(
+                    f"""<div style="border:1px solid #444;border-radius:8px;padding:10px;margin-bottom:8px;font-size:0.78rem;height:160px;overflow-y:auto;background:#1e1e1e;position:relative;">
+                    <b style="color:#aaa;">Chunk {i + 1}</b><br><br>{chunk["text"]}
+                    <div style="position:sticky;bottom:0;text-align:right;margin-top:6px;">
+                        <span style="background:#2a2a2a;border-radius:4px;padding:2px 6px;font-size:0.72rem;color:{score_color};font-weight:bold;">
+                            {score:.3f}
+                        </span>
+                    </div></div>""",
+                    unsafe_allow_html=True,
+                )
+    elif rag_mode in ("rag", "both"):
+        st.caption("Qdrant'tan alınan herhangi bir chunk bulunamadı.")
+
+    st.divider()
 
     run_timestamp = datetime.utcnow().isoformat()
     selected_models = qa_models_selected or all_models
     answers: List[dict] = []
 
+    # Dış kolon yapısı: RAG sol, RAG'siz sağ
+    if rag_mode == "both":
+        outer_cols = st.columns(2)
+        rag_col = outer_cols[0]
+        no_rag_col = outer_cols[1]
+        with rag_col:
+            st.markdown("# RAG'li Cevap")
+        with no_rag_col:
+            st.markdown("# RAG'siz Cevap")
+    elif rag_mode == "rag":
+        rag_col = st.container()
+        with rag_col:
+            st.markdown("# RAG'li Cevap")
+    else:
+        no_rag_col = st.container()
+        with no_rag_col:
+            st.markdown("# RAG'siz Cevap")
+
     for qa_model_name in selected_models:
         warmup_model(model=qa_model_name)
-        st.markdown(f"**Model: {qa_model_name}**")
-        cols = st.columns(2) if rag_mode == "both" else [st.container()]
 
         # --- RAG'li cevap ---
         if rag_mode in ("rag", "both"):
@@ -238,20 +294,11 @@ def _run_chat_eval(
                 )
                 continue
 
-            with cols[0]:
-                st.markdown("**RAG'li cevap (Ollama)**")
-                st.write(rag_record["model_answer"])
-                st.markdown("**RAG'li cevap eval**")
-                st.json(rag_eval)
-
-                # Retrieved chunks: RAG değerlendirmesinin hangi bağlamla yapıldığını görmen için.
-                st.markdown("**Retrieved chunks**")
-                if retrieved_chunks_list:
-                    for i, chunk_text in enumerate(retrieved_chunks_list):
-                        st.markdown(f"Chunk {i + 1}")
-                        st.code(chunk_text)
-                else:
-                    st.caption("Qdrant'tan alınan herhangi bir chunk bulunamadı.")
+            with rag_col:
+                st.markdown(f"**{qa_model_name}:**")
+                st.text(rag_record["model_answer"])
+                with st.expander("Eval"):
+                    st.json(rag_eval)
 
             st.session_state.setdefault("chat_eval_rows", []).append(
                 {
@@ -266,7 +313,7 @@ def _run_chat_eval(
                     "ai_score": rag_eval.get("ai_score", ""),
                     "ai_verdict": rag_eval.get("ai_verdict", ""),
                     "ai_hallucination_risk": rag_eval.get("ai_hallucination_risk", ""),
-                    "retrieved_chunks": json.dumps(retrieved_chunks_list, ensure_ascii=False),
+                    "retrieved_chunks": json.dumps([c["text"] for c in retrieved_chunks_list], ensure_ascii=False),
                 }
             )
             answers.append(
@@ -304,11 +351,11 @@ def _run_chat_eval(
                 )
                 continue
 
-            with cols[1] if rag_mode == "both" else cols[0]:
-                st.markdown("**RAG'siz cevap (Ollama)**")
-                st.write(no_rag_record["model_answer"])
-                st.markdown("**RAG'siz cevap eval**")
-                st.json(no_rag_eval)
+            with no_rag_col:
+                st.markdown(f"**{qa_model_name}:**")
+                st.text(no_rag_record["model_answer"])
+                with st.expander("Eval"):
+                    st.json(no_rag_eval)
 
             st.session_state.setdefault("chat_eval_rows", []).append(
                 {
@@ -565,7 +612,8 @@ def main() -> None:
                 help="PDF'leri indekslemek için kullanılacak Ollama embedding modeli.",
             )
 
-        st.info(f"Embedding modeli: **{embed_model_name}** (Ollama) | Koleksiyon: **{collection_name}** | Qdrant: **{qdrant_url}**")
+        index_collection_name = _collection_name_for_model(collection_name, embed_model_name)
+        st.info(f"Embedding modeli: **{embed_model_name}** (Ollama) | Koleksiyon: **{index_collection_name}** | Qdrant: **{qdrant_url}**")
 
         if st.button("İndeksi oluştur / güncelle"):
             pdf_paths: List[Path] = []
@@ -614,7 +662,7 @@ def main() -> None:
 
                     result = index_pdfs(
                         [str(p) for p in pdf_paths],
-                        collection_name=collection_name,
+                        collection_name=index_collection_name,
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
                         qdrant_url=qdrant_url,
@@ -635,7 +683,7 @@ def main() -> None:
                     col3.metric("Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
                     col4.metric("Toplam", f"{result['total_sec']}s")
 
-                    st.write("Koleksiyon:", collection_name)
+                    st.write("Koleksiyon:", index_collection_name)
                 except Exception as exc:
                     st.error(f"İndeksleme sırasında hata oluştu: {exc}")
 
@@ -666,6 +714,19 @@ def main() -> None:
                 "Varsayılan örnek CSV'yi kullan (sample_rag_input.csv)",
                 value=not uploaded_csv,
             )
+
+        with st.spinner("Embedding modelleri yükleniyor..."):
+            csv_embed_models, csv_embed_err = _list_embedding_models()
+        if csv_embed_models:
+            csv_embed_model = st.selectbox(
+                "Embedding modeli (indexleme ile aynı olmalı)",
+                options=csv_embed_models,
+                key="csv_embed_model",
+            )
+        else:
+            csv_embed_model = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        csv_collection_name = _collection_name_for_model(collection_name, csv_embed_model)
+        st.caption(f"Kullanılacak koleksiyon: **{csv_collection_name}**")
 
         col_k, col_rag_mode = st.columns(2)
         with col_rag_mode:
@@ -720,7 +781,7 @@ def main() -> None:
                     with st.spinner(f"Pipeline çalışıyor: {qa_model} ({rag_mode_label})..."):
                         model_rows = run_full_pipeline(
                             csv_path=str(csv_path),
-                            collection_name=collection_name,
+                            collection_name=csv_collection_name,
                             qdrant_url=qdrant_url,
                             eval_model=eval_model_name,
                             k=int(k),
@@ -769,6 +830,19 @@ def main() -> None:
         st.markdown("---")
         chat_eval_backend, chat_eval_model_name, chat_local_eval_model_name = _render_eval_settings(all_models, key_prefix="chat")
         st.markdown("---")
+
+        with st.spinner("Embedding modelleri yükleniyor..."):
+            chat_embed_models, _ = _list_embedding_models()
+        if chat_embed_models:
+            chat_embed_model = st.selectbox(
+                "Embedding modeli (indexleme ile aynı olmalı)",
+                options=chat_embed_models,
+                key="chat_embed_model",
+            )
+        else:
+            chat_embed_model = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        chat_collection_name = _collection_name_for_model(collection_name, chat_embed_model)
+        st.caption(f"Kullanılacak koleksiyon: **{chat_collection_name}**")
 
         if "chat_eval_rows" not in st.session_state:
             st.session_state["chat_eval_rows"] = []
@@ -819,7 +893,8 @@ def main() -> None:
                 eval_model_name=chat_eval_model_name,
                 local_eval_model_name=chat_local_eval_model_name,
                 openai_api_key=openai_api_key,
-                collection_name=collection_name,
+                collection_name=chat_collection_name,
+                embed_model=chat_embed_model,
             )
 
         # Manuel chat logunu CSV olarak indirme

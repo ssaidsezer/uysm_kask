@@ -55,10 +55,20 @@ def ensure_collection(
     vector_size: int,
     distance: qmodels.Distance = qmodels.Distance.COSINE,
 ) -> None:
-    """Qdrant koleksiyonunu yoksa oluştur, varsa bırak."""
-    existing = [c.name for c in client.get_collections().collections]
+    """Qdrant koleksiyonunu yoksa oluştur, dimension değiştiyse sil ve yeniden oluştur."""
+    existing = {c.name for c in client.get_collections().collections}
     if collection_name in existing:
-        return
+        info = client.get_collection(collection_name)
+        vectors_config = info.config.params.vectors
+        if isinstance(vectors_config, dict):
+            existing_size = next(iter(vectors_config.values())).size
+        else:
+            existing_size = vectors_config.size if vectors_config else None
+        if existing_size == vector_size:
+            return
+        # Dimension değişti — eski collection'ı sil ve yeniden oluştur
+        client.delete_collection(collection_name)
+
     client.create_collection(
         collection_name=collection_name,
         vectors_config=qmodels.VectorParams(
@@ -324,6 +334,7 @@ def retrieve_context(
     collection_name: str = DEFAULT_COLLECTION_NAME,
     k: int = 5,
     qdrant_url: str = QDRANT_URL,
+    score_threshold: float = 0.4,
 ) -> str:
     """
     Soruyu Ollama ile embed edip Qdrant'tan en yakın k chunk'ı döndürür.
@@ -336,6 +347,7 @@ def retrieve_context(
         collection_name=collection_name,
         query=question_embedding,
         limit=k,
+        score_threshold=score_threshold,
     )
     results = getattr(query_result, "points", query_result)
 
@@ -364,11 +376,14 @@ def retrieve_chunks(
     collection_name: str = DEFAULT_COLLECTION_NAME,
     k: int = 5,
     qdrant_url: str = QDRANT_URL,
-) -> List[str]:
+    score_threshold: float = 0.4,
+    embed_model: str | None = None,
+) -> List[dict]:
     """
-    Soruyu Ollama ile embed edip Qdrant'tan en yakın k chunk'ı liste olarak döndürür.
+    Soruyu Ollama ile embed edip Qdrant'tan en yakın k chunk'ı döndürür.
+    Her eleman {"text": str, "score": float} dict'idir.
     """
-    question_embedding = get_embeddings([question])[0]
+    question_embedding = get_embeddings([question], model=embed_model or OLLAMA_EMBED_MODEL)[0]
 
     client = get_qdrant_client(url=qdrant_url)
 
@@ -376,21 +391,24 @@ def retrieve_chunks(
         collection_name=collection_name,
         query=question_embedding,
         limit=k,
+        score_threshold=score_threshold,
     )
     results = getattr(query_result, "points", query_result)
 
-    docs: List[str] = []
+    docs: List[dict] = []
     seen: set[str] = set()
     for hit in results:
         if isinstance(hit, dict):
             payload = hit.get("payload") or {}
+            score = hit.get("score", 0.0)
         else:
             payload = getattr(hit, "payload", None) or {}
+            score = getattr(hit, "score", 0.0)
         text = payload.get("text", "")
         if isinstance(text, str) and text.strip():
             key = _normalize_text_for_dedup(text)
             if key and key not in seen:
                 seen.add(key)
-                docs.append(text)
+                docs.append({"text": text, "score": score})
 
     return docs
