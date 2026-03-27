@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import hashlib
 import uuid
 from typing import List, Optional, Sequence
 
@@ -31,6 +32,21 @@ def get_qdrant_client(url: str = QDRANT_URL) -> QdrantClient:
     if _qdrant_client is None:
         _qdrant_client = QdrantClient(url=url)
     return _qdrant_client
+
+
+def _normalize_text_for_dedup(text: str) -> str:
+    """Whitespace farklarını normalize ederek metin karşılaştır."""
+    return " ".join(text.split()).strip()
+
+
+def _chunk_id(source: str, page: int, chunk_index: int) -> str:
+    """
+    Aynı PDF tekrar indekslendiğinde point ID sabit kalsın.
+    Böylece Qdrant upsert duplicate eklemek yerine güncelleme yapar.
+    """
+    raw = f"{source}|{page}|{chunk_index}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, digest))
 
 
 def ensure_collection(
@@ -160,7 +176,7 @@ def _extract_pdf_chunks(
             ):
                 chunks.append(
                     {
-                        "id": str(uuid.uuid4()),
+                        "id": _chunk_id(pdf_path, page_index, chunk_index),
                         "text": chunk_text_str,
                         "metadata": {
                             "source": pdf_path,
@@ -254,6 +270,25 @@ def index_pdfs(
     client = get_qdrant_client(url=qdrant_url)
     ensure_collection(client, collection_name, vector_size=vector_size)
 
+    # Aynı source daha önce indekslendiyse eski point'leri temizle.
+    # Böylece tekrar indekslemede duplicate birikmez.
+    unique_sources = sorted({str(path) for path in pdf_paths if str(path).strip()})
+    if unique_sources:
+        source_filter = qmodels.Filter(
+            should=[
+                qmodels.FieldCondition(
+                    key="source",
+                    match=qmodels.MatchValue(value=source),
+                )
+                for source in unique_sources
+            ]
+        )
+        client.delete(
+            collection_name=collection_name,
+            points_selector=qmodels.FilterSelector(filter=source_filter),
+            wait=True,
+        )
+
     points = [
         qmodels.PointStruct(
             id=all_chunks[i]["id"],
@@ -305,6 +340,7 @@ def retrieve_context(
     results = getattr(query_result, "points", query_result)
 
     docs: List[str] = []
+    seen: set[str] = set()
     for hit in results:
         if isinstance(hit, dict):
             payload = hit.get("payload") or {}
@@ -312,7 +348,10 @@ def retrieve_context(
             payload = getattr(hit, "payload", None) or {}
         text = payload.get("text", "")
         if isinstance(text, str) and text.strip():
-            docs.append(text)
+            key = _normalize_text_for_dedup(text)
+            if key and key not in seen:
+                seen.add(key)
+                docs.append(text)
 
     if not docs:
         return ""
@@ -341,6 +380,7 @@ def retrieve_chunks(
     results = getattr(query_result, "points", query_result)
 
     docs: List[str] = []
+    seen: set[str] = set()
     for hit in results:
         if isinstance(hit, dict):
             payload = hit.get("payload") or {}
@@ -348,6 +388,9 @@ def retrieve_chunks(
             payload = getattr(hit, "payload", None) or {}
         text = payload.get("text", "")
         if isinstance(text, str) and text.strip():
-            docs.append(text)
+            key = _normalize_text_for_dedup(text)
+            if key and key not in seen:
+                seen.add(key)
+                docs.append(text)
 
     return docs

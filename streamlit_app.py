@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ from rag_index import (
     DEFAULT_COLLECTION_NAME,
     QDRANT_URL,
     index_pdfs,
-    retrieve_context,
+    retrieve_chunks,
 )
 from pipeline import (
     QA_OLLAMA_MODEL,
@@ -186,11 +187,15 @@ def _run_chat_eval(
     else:
         openai_client = None
 
-    context = retrieve_context(
-        question=question,
-        collection_name=collection_name,
-        k=int(k),
-    )
+    retrieved_chunks_list: List[str] = []
+    context = ""
+    if rag_mode in ("rag", "both"):
+        retrieved_chunks_list = retrieve_chunks(
+            question=question,
+            collection_name=collection_name,
+            k=int(k),
+        )
+        context = "\n\n".join(retrieved_chunks_list)
 
     run_timestamp = datetime.utcnow().isoformat()
     selected_models = qa_models_selected or all_models
@@ -239,6 +244,15 @@ def _run_chat_eval(
                 st.markdown("**RAG'li cevap eval**")
                 st.json(rag_eval)
 
+                # Retrieved chunks: RAG değerlendirmesinin hangi bağlamla yapıldığını görmen için.
+                st.markdown("**Retrieved chunks**")
+                if retrieved_chunks_list:
+                    for i, chunk_text in enumerate(retrieved_chunks_list):
+                        st.markdown(f"Chunk {i + 1}")
+                        st.code(chunk_text)
+                else:
+                    st.caption("Qdrant'tan alınan herhangi bir chunk bulunamadı.")
+
             st.session_state.setdefault("chat_eval_rows", []).append(
                 {
                     "timestamp": run_timestamp,
@@ -252,6 +266,7 @@ def _run_chat_eval(
                     "ai_score": rag_eval.get("ai_score", ""),
                     "ai_verdict": rag_eval.get("ai_verdict", ""),
                     "ai_hallucination_risk": rag_eval.get("ai_hallucination_risk", ""),
+                    "retrieved_chunks": json.dumps(retrieved_chunks_list, ensure_ascii=False),
                 }
             )
             answers.append(
@@ -308,6 +323,7 @@ def _run_chat_eval(
                     "ai_score": no_rag_eval.get("ai_score", ""),
                     "ai_verdict": no_rag_eval.get("ai_verdict", ""),
                     "ai_hallucination_risk": no_rag_eval.get("ai_hallucination_risk", ""),
+                    "retrieved_chunks": "[]",
                 }
             )
             answers.append(
