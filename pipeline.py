@@ -22,17 +22,21 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
 EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4.1-mini")
 
 
-def load_questions(csv_path: str) -> List[Dict]:
+def load_questions(
+    csv_path: str,
+    question_col: str = "question",
+    answer_col: str = "answer",
+) -> List[Dict]:
     """
-    Load questions and optional observation_idea (Answers) from a CSV.
-    Assumes headers: Questions, Answers (like sample_rag_input.csv).
+    Load questions and optional observation_idea from a CSV.
+    Column names are configurable via question_col and answer_col parameters.
     """
     items: List[Dict] = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for idx, row in enumerate(reader):
-            question = (row.get("Questions") or "").strip()
-            observation = (row.get("Answers") or "").strip()
+            question = (row.get(question_col) or "").strip()
+            observation = (row.get(answer_col) or "").strip()
             if not question:
                 continue
             items.append(
@@ -293,15 +297,10 @@ def evaluate_answer(
         '  "model": string,\n'
         '  "question_index": integer,\n'
         '  "question": string,\n'
-        '  "observation_idea": string,\n'
         '  "model_answer": string,\n'
         '  "response_time_seconds": number,\n'
-        '  "ai_verdict": string,\n'
-        '  "ai_score": integer,\n'
-        '  "ai_hallucination_risk": string,\n'
-        '  "ai_strengths": string,\n'
-        '  "ai_issues": string,\n'
-        '  "ai_suggested_fix": string\n'
+        '  "ai_verdict": string,  // must be exactly one of: correct | partially_correct | incomplete | incorrect\n'
+        '  "ai_score": integer  // 0-100\n'
         "}\n"
         "JSON only, no extra text."
     )
@@ -310,7 +309,7 @@ def evaluate_answer(
         f'model: "{record["model"]}"\n'
         f"question_index: {int(record['question_index'])}\n"
         f'question: "{record["question"]}"\n'
-        f'observation_idea: "{record.get("observation_idea", "")}"\n'
+        f'expected_answer: "{record.get("observation_idea", "")}"\n'
         f'model_answer: "{record.get("model_answer", "")}"\n'
         f"response_time_seconds: {float(record.get('response_time_seconds', 0.0))}\n"
     )
@@ -365,15 +364,10 @@ def _evaluate_answer_local(
         '  \"model\": string,\n'
         '  \"question_index\": integer,\n'
         '  \"question\": string,\n'
-        '  \"observation_idea\": string,\n'
         '  \"model_answer\": string,\n'
         '  \"response_time_seconds\": number,\n'
-        '  \"ai_verdict\": string,\n'
-        '  \"ai_score\": integer,\n'
-        '  \"ai_hallucination_risk\": string,\n'
-        '  \"ai_strengths\": string,\n'
-        '  \"ai_issues\": string,\n'
-        '  \"ai_suggested_fix\": string\n'
+        '  \"ai_verdict\": string,  // must be exactly one of: correct | partially_correct | incomplete | incorrect\n'
+        '  \"ai_score\": integer  // 0-100\n'
         "}\n"
         "JSON only, no extra text."
     )
@@ -382,7 +376,7 @@ def _evaluate_answer_local(
         f'model: "{record["model"]}"\n'
         f"question_index: {int(record['question_index'])}\n"
         f'question: "{record["question"]}"\n'
-        f'observation_idea: "{record.get("observation_idea", "")}"\n'
+        f'expected_answer: "{record.get("observation_idea", "")}"\n'
         f'model_answer: "{record.get("model_answer", "")}"\n'
         f"response_time_seconds: {float(record.get('response_time_seconds', 0.0))}\n"
     )
@@ -489,6 +483,9 @@ def run_full_pipeline(
     qa_model: str = QA_OLLAMA_MODEL,
     rag_mode: str = "rag",
     eval_enabled: bool = True,
+    question_col: str = "question",
+    answer_col: str = "answer",
+    embed_model: Optional[str] = None,
 ) -> List[Dict]:
     """
     High-level helper:
@@ -499,13 +496,15 @@ def run_full_pipeline(
 
     rag_mode: "rag" | "no_rag" | "both"
     """
-    questions = load_questions(csv_path)
+    questions = load_questions(csv_path, question_col=question_col, answer_col=answer_col)
     if not questions:
         return []
 
     eval_backend = (eval_backend or "openai").lower()
     if eval_enabled and eval_backend == "openai" and openai_client is None:
         openai_client = get_openai_client()
+
+    _REMOVE_COLS = {"observation_idea", "ai_hallucination_risk", "ai_strengths", "ai_issues", "ai_suggested_fix"}
 
     rows: List[Dict] = []
 
@@ -522,6 +521,7 @@ def run_full_pipeline(
                 collection_name=collection_name,
                 k=k,
                 qdrant_url=qdrant_url,
+                embed_model=embed_model,
             )
             context = "\n\n".join(c["text"] for c in chunks)
             rag_result = generate_rag_answer_ollama(
@@ -547,7 +547,18 @@ def run_full_pipeline(
                 )
             else:
                 eval_row = {**record}
+            for col in _REMOVE_COLS:
+                eval_row.pop(col, None)
+            eval_row["answer"] = observation_idea
             eval_row["rag_type"] = "RAG'li"
+            eval_row["retrieved_chunk_size"] = len(chunks)
+            source_parts = []
+            for c in chunks:
+                src = os.path.basename(c.get("source", "")) or c.get("source", "")
+                page = c.get("page", "")
+                if src:
+                    source_parts.append(f"{src} - page {page}" if page != "" else src)
+            eval_row["chunk_sources"] = " | ".join(dict.fromkeys(source_parts))
             eval_row["retrieved_chunks"] = json.dumps([c["text"] for c in chunks], ensure_ascii=False)
             rows.append(eval_row)
 
@@ -575,7 +586,12 @@ def run_full_pipeline(
                 )
             else:
                 eval_row = {**record}
+            for col in _REMOVE_COLS:
+                eval_row.pop(col, None)
+            eval_row["answer"] = observation_idea
             eval_row["rag_type"] = "RAG'siz"
+            eval_row["retrieved_chunk_size"] = 0
+            eval_row["chunk_sources"] = ""
             eval_row["retrieved_chunks"] = ""
             rows.append(eval_row)
 

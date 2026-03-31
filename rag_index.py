@@ -409,6 +409,11 @@ def retrieve_chunks(
             key = _normalize_text_for_dedup(text)
             if key and key not in seen:
                 seen.add(key)
-                docs.append({"text": text, "score": score})
+                docs.append({
+                    "text": text,
+                    "score": score,
+                    "source": payload.get("source", ""),
+                    "page": payload.get("page", ""),
+                })
 
     return docs
