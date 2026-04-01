@@ -592,6 +592,40 @@ def main() -> None:
         "cevapları Ollama ile üret ve değerlendir."
     )
 
+    # === Sidebar: Sistem Kaynakları İzleme ===
+    with st.sidebar:
+        st.subheader("🧠 Sunucu Kaynakları")
+        monitor_url = os.environ.get("MONITOR_URL", "http://192.168.1.151:8081")
+        
+        st.caption(f"Hedef: {monitor_url}")
+        if st.button("🔄 Kaynakları Yenile"):
+            pass # Streamlit automaticaly reruns the script
+            
+        try:
+            m_resp = requests.get(f"{monitor_url}/stats", timeout=3)
+            if m_resp.status_code == 200:
+                stats = m_resp.json()
+                
+                cpu_val = stats.get("cpu_usage", 0.0)
+                gpu_val = stats.get("gpu_usage", 0.0)
+                vram_u = stats.get("vram_used", 0)
+                vram_t = stats.get("vram_total", 0)
+                
+                # Layout in columns
+                c1, c2 = st.columns(2)
+                c1.metric("CPU", f"%{cpu_val:.1f}")
+                c2.metric("GPU", f"%{gpu_val:.1f}")
+                
+                if vram_t > 0:
+                    vram_pct = (float(vram_u) / float(vram_t)) * 100
+                    st.metric("VRAM", f"{vram_u} / {vram_t} MB", f"%{vram_pct:.1f} dolu", delta_color="off")
+                else:
+                    st.metric("VRAM", f"{vram_u} MB", "Bilgi alınamadı", delta_color="off")
+            else:
+                st.error("Sistem bilgisi alınamadı.")
+        except Exception as e:
+            st.error("Monitor servisine ulaşılamadı. Lütfen sunucudaki Docker'ın açık olduğundan ve port 8081'in açık olduğundan emin olun.")
+
     openai_api_key = os.environ.get("OPENAI_API_KEY", "")
     qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
     collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
@@ -1119,10 +1153,8 @@ def main() -> None:
                     mime="audio/wav",
                     key="voice_manuel_dl",
                 )
-
-
     # =========================================================================
-    # TAB 5: Yönetim (Model ve Koleksiyon Silme)
+    # TAB 6: Yönetim (Model ve Koleksiyon Silme)
     # =========================================================================
     with tab_manage:
         st.subheader("Yönetim")
