@@ -14,12 +14,33 @@ from rag_index import (
     QDRANT_URL,
     get_qdrant_client,
     retrieve_chunks,
+    retrieve_chunks_smart,
+    retrieve_chunks_bm25,
+    retrieve_chunks_bm25_smart,
 )
 
 
 QA_OLLAMA_MODEL = os.getenv("QA_OLLAMA_MODEL", "qwen3:1.7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
 EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4.1-mini")
+
+_CSV_ENCODINGS = ["utf-8-sig", "utf-8", "cp1254", "cp1252", "latin-1"]
+
+
+def _open_csv_safe(path: str):
+    """UTF-8 → cp1254 → latin-1 sırasıyla dener; Türkçe karakterleri doğru okur."""
+    for enc in _CSV_ENCODINGS:
+        try:
+            f = open(path, newline="", encoding=enc)
+            f.read()
+            f.seek(0)
+            return f
+        except (UnicodeDecodeError, UnicodeError):
+            try:
+                f.close()
+            except Exception:
+                pass
+    return open(path, newline="", encoding="utf-8", errors="replace")
 
 
 def load_questions(csv_path: str) -> List[Dict]:
@@ -28,7 +49,7 @@ def load_questions(csv_path: str) -> List[Dict]:
     Assumes headers: Questions, Answers (like sample_rag_input.csv).
     """
     items: List[Dict] = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
+    with _open_csv_safe(csv_path) as f:
         reader = csv.DictReader(f)
         for idx, row in enumerate(reader):
             question = (row.get("Questions") or "").strip()
@@ -51,20 +72,20 @@ def _build_rag_prompt(question: str, context: str) -> str:
     """
     if not context.strip():
         return (
-            "Aşağıdaki soruyu cevaplamaya çalışıyorsun, ancak sana hiçbir bağlam verilmiyor.\n"
-            "Cevabı bilmiyorsan 'BİLMİYORUM' de ve uydurma.\n\n"
-            f"Soru: {question}\n"
+            "You are trying to answer the following question, but no context is provided.\n"
+            "If you do not know the answer, say 'I DON'T KNOW' and do not make anything up.\n\n"
+            f"Question: {question}\n"
         )
 
     return (
-        "Sana verilen metni bağlam olarak kullanarak soruyu cevapla.\n"
-        "Kurallar:\n"
-        "- Sadece aşağıdaki bağlamdaki bilgilere dayan.\n"
-        "- Bağlamda olmayan bilgileri uydurma.\n"
-        "- Eğer bağlam soruyu cevaplamak için yeterli değilse kısaca 'BİLMİYORUM' de.\n\n"
-        f"Soru:\n{question}\n\n"
-        f"Bağlam:\n{context}\n\n"
-        "Cevabın:\n"
+        "Answer the question using only the provided context.\n"
+        "Rules:\n"
+        "- Base your answer solely on the context below.\n"
+        "- Do not fabricate information that is not in the context.\n"
+        "- If the context is insufficient to answer the question, say 'I DON'T KNOW'.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Context:\n{context}\n\n"
+        "Answer:\n"
     )
 
 
@@ -174,11 +195,11 @@ def _build_no_rag_prompt(question: str) -> str:
     Simple Turkish non-RAG prompt: answer from general knowledge.
     """
     return (
-        "Sen Türkçe konuşan bir uzmansın.\n"
-        "Aşağıdaki soruyu kendi bilginle, net ve kısa biçimde cevapla.\n"
-        "Cevaptan emin değilsen dürüst ol ve uydurma.\n\n"
-        f"Soru: {question}\n\n"
-        "Cevabın:\n"
+        "You are an expert assistant.\n"
+        "Answer the following question clearly and concisely using your knowledge.\n"
+        "If you are not confident in your answer, be honest and do not make anything up.\n\n"
+        f"Question: {question}\n\n"
+        "Answer:\n"
     )
 
 
@@ -489,6 +510,9 @@ def run_full_pipeline(
     qa_model: str = QA_OLLAMA_MODEL,
     rag_mode: str = "rag",
     eval_enabled: bool = True,
+    smart_chunking: bool = False,
+    score_threshold: float = 0.55,
+    retrieval_mode: str = "vector",
 ) -> List[Dict]:
     """
     High-level helper:
@@ -498,6 +522,8 @@ def run_full_pipeline(
       - Evaluate the answer and return flat dict rows.
 
     rag_mode: "rag" | "no_rag" | "both"
+    smart_chunking: True ise child chunk eşleşmesi → parent bağlam ile çalışır.
+    retrieval_mode: "vector" | "bm25"
     """
     questions = load_questions(csv_path)
     if not questions:
@@ -517,12 +543,37 @@ def run_full_pipeline(
 
         # --- RAG'li ---
         if rag_mode in ("rag", "both"):
-            chunks = retrieve_chunks(
-                question=question,
-                collection_name=collection_name,
-                k=k,
-                qdrant_url=qdrant_url,
-            )
+            if retrieval_mode == "bm25":
+                if smart_chunking:
+                    chunks = retrieve_chunks_bm25_smart(
+                        question=question,
+                        base_collection=collection_name,
+                        k=k,
+                        qdrant_url=qdrant_url,
+                    )
+                else:
+                    chunks = retrieve_chunks_bm25(
+                        question=question,
+                        collection_name=collection_name,
+                        k=k,
+                        qdrant_url=qdrant_url,
+                    )
+            elif smart_chunking:
+                chunks = retrieve_chunks_smart(
+                    question=question,
+                    base_collection=collection_name,
+                    k=k,
+                    qdrant_url=qdrant_url,
+                    score_threshold=score_threshold,
+                )
+            else:
+                chunks = retrieve_chunks(
+                    question=question,
+                    collection_name=collection_name,
+                    k=k,
+                    qdrant_url=qdrant_url,
+                    score_threshold=score_threshold,
+                )
             context = "\n\n".join(c["text"] for c in chunks)
             rag_result = generate_rag_answer_ollama(
                 question=question,
