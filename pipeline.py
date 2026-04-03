@@ -71,7 +71,6 @@ def _build_rag_prompt(question: str, context: str) -> str:
         "Cevabın:\n"
     )
 
-
 def warmup_model(
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
@@ -93,12 +92,95 @@ def warmup_model(
         pass
 
 
+def unload_model(
+    model: str,
+    base_url: str = OLLAMA_BASE_URL,
+    timeout: int = 30,
+) -> None:
+    """
+    keep_alive=0 göndererek modeli Ollama'nın VRAM/RAM'inden boşaltır.
+    """
+    if not base_url:
+        return
+    try:
+        requests.post(
+            f"{base_url.rstrip('/')}/api/generate",
+            json={"model": model, "keep_alive": 0},
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+
+
+def _require_ollama_base_url(base_url: str) -> str:
+    if not base_url:
+        raise ValueError(
+            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
+        )
+    return base_url.rstrip("/")
+
+
+def _collect_ollama_chat_response(
+    *,
+    prompt: str,
+    model: str,
+    base_url: str,
+    timeout: int,
+    think: bool,
+) -> Dict:
+    api_base = _require_ollama_base_url(base_url)
+    t0 = time.time()
+    payload: Dict = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "think": think,
+    }
+    resp = requests.post(
+        f"{api_base}/api/chat",
+        json=payload,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+
+    chunks: list[str] = []
+    thinking_chunks: list[str] = []
+    last_chunk = resp.json() or {}
+    message = last_chunk.get("message") or {}
+    content = message.get("content") or ""
+    thinking = message.get("thinking") or ""
+    if content:
+        chunks.append(content)
+    if thinking:
+        thinking_chunks.append(thinking)
+
+    answer = "".join(chunks).replace("\r\n", "\n").strip()
+    result = {
+        "answer": answer,
+        "thinking": "".join(thinking_chunks).replace("\r\n", "\n").strip() if think else "",
+        "response_time_seconds": time.time() - t0,
+        "eval_count": None,
+        "eval_duration_seconds": None,
+        "tokens_per_second": None,
+    }
+    raw_eval_count = last_chunk.get("eval_count")
+    raw_eval_duration = last_chunk.get("eval_duration")
+    if isinstance(raw_eval_count, (int, float)) and isinstance(raw_eval_duration, (int, float)):
+        result["eval_count"] = int(raw_eval_count)
+        result["eval_duration_seconds"] = float(raw_eval_duration) / 1e9
+        if result["eval_duration_seconds"] > 0:
+            result["tokens_per_second"] = result["eval_count"] / result["eval_duration_seconds"]
+    return result
+
+
 def generate_rag_answer_ollama(
     question: str,
     context: str,
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
+    think: bool = False,
 ) -> Dict:
     """
     Call a local Ollama model (e.g. Qwen3 1.7B) with question + context.
@@ -106,71 +188,18 @@ def generate_rag_answer_ollama(
     Returns a dict with:
       - answer: str
       - response_time_seconds: float
+
+    think: Reasoning modeli için thinking modunu aç/kapat (varsayılan kapalı).
+           Kapalıyken trace temizlenir, eval sonuçları temiz kalır.
     """
     prompt = _build_rag_prompt(question, context)
-    if not base_url:
-        raise ValueError(
-            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
-            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
-        )
-    t0 = time.time()
-
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "stream": False,
-        },
+    return _collect_ollama_chat_response(
+        prompt=prompt,
+        model=model,
+        base_url=base_url,
         timeout=timeout,
+        think=think,
     )
-    dt = time.time() - t0
-    resp.raise_for_status()
-    data = resp.json()
-
-    answer = ""
-    # Typical Ollama /api/chat response: {"message": {"role": "assistant", "content": "..."}}
-    if isinstance(data, dict):
-        message = data.get("message") or {}
-        if isinstance(message, dict):
-            answer = str(message.get("content") or "")
-        elif "choices" in data:
-            # Fallback if future API resembles OpenAI style
-            choices = data.get("choices") or []
-            if choices:
-                msg = choices[0].get("message") or {}
-                answer = str(msg.get("content") or "")
-
-    answer = answer.replace("\r\n", "\n").strip()
-
-    # Optional token-level statistics from Ollama
-    eval_count = None
-    eval_duration_seconds = None
-    tokens_per_second = None
-    if isinstance(data, dict):
-        raw_eval_count = data.get("eval_count")
-        raw_eval_duration = data.get("eval_duration")
-        if isinstance(raw_eval_count, (int, float)) and isinstance(
-            raw_eval_duration, (int, float)
-        ):
-            eval_count = int(raw_eval_count)
-            # Ollama durations are in nanoseconds
-            eval_duration_seconds = float(raw_eval_duration) / 1e9
-            if eval_duration_seconds > 0:
-                tokens_per_second = eval_count / eval_duration_seconds
-
-    return {
-        "answer": answer,
-        "response_time_seconds": dt,
-        "eval_count": eval_count,
-        "eval_duration_seconds": eval_duration_seconds,
-        "tokens_per_second": tokens_per_second,
-    }
 
 
 def _build_no_rag_prompt(question: str) -> str:
@@ -191,6 +220,7 @@ def generate_no_rag_answer_ollama(
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
+    think: bool = False,
 ) -> Dict:
     """
     Call a local Ollama model WITHOUT any retrieved context (no RAG).
@@ -198,68 +228,17 @@ def generate_no_rag_answer_ollama(
     Returns a dict with:
       - answer: str
       - response_time_seconds: float
+
+    think: Reasoning modeli için thinking modunu aç/kapat (varsayılan kapalı).
     """
     prompt = _build_no_rag_prompt(question)
-    if not base_url:
-        raise ValueError(
-            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
-            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
-        )
-    t0 = time.time()
-
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "stream": False,
-        },
+    return _collect_ollama_chat_response(
+        prompt=prompt,
+        model=model,
+        base_url=base_url,
         timeout=timeout,
+        think=think,
     )
-    dt = time.time() - t0
-    resp.raise_for_status()
-    data = resp.json()
-
-    answer = ""
-    if isinstance(data, dict):
-        message = data.get("message") or {}
-        if isinstance(message, dict):
-            answer = str(message.get("content") or "")
-        elif "choices" in data:
-            choices = data.get("choices") or []
-            if choices:
-                msg = choices[0].get("message") or {}
-                answer = str(msg.get("content") or "")
-
-    answer = answer.replace("\r\n", "\n").strip()
-
-    # Optional token-level statistics from Ollama
-    eval_count = None
-    eval_duration_seconds = None
-    tokens_per_second = None
-    if isinstance(data, dict):
-        raw_eval_count = data.get("eval_count")
-        raw_eval_duration = data.get("eval_duration")
-        if isinstance(raw_eval_count, (int, float)) and isinstance(
-            raw_eval_duration, (int, float)
-        ):
-            eval_count = int(raw_eval_count)
-            eval_duration_seconds = float(raw_eval_duration) / 1e9
-            if eval_duration_seconds > 0:
-                tokens_per_second = eval_count / eval_duration_seconds
-
-    return {
-        "answer": answer,
-        "response_time_seconds": dt,
-        "eval_count": eval_count,
-        "eval_duration_seconds": eval_duration_seconds,
-        "tokens_per_second": tokens_per_second,
-    }
 
 
 def get_openai_client(api_key: Optional[str] = None) -> OpenAI:
@@ -493,6 +472,7 @@ def run_full_pipeline(
     question_col: str = "question",
     answer_col: str = "answer",
     embed_model: Optional[str] = None,
+    think: bool = False,
 ) -> List[Dict]:
     """
     High-level helper:
@@ -535,6 +515,7 @@ def run_full_pipeline(
                 question=question,
                 context=context,
                 model=qa_model,
+                think=think,
             )
             record = {
                 "model": qa_model,
@@ -577,6 +558,7 @@ def run_full_pipeline(
             no_rag_result = generate_no_rag_answer_ollama(
                 question=question,
                 model=qa_model,
+                think=think,
             )
             record = {
                 "model": qa_model,
@@ -676,4 +658,3 @@ if __name__ == "__main__":
     )
     written = write_results_to_csv(rows_, args.output_path)
     print(f"Wrote {written} rows to {args.output_path}")
-
