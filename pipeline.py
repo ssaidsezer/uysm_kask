@@ -12,7 +12,6 @@ from openai import OpenAI
 from rag_index import (
     DEFAULT_COLLECTION_NAME,
     QDRANT_URL,
-    get_qdrant_client,
     retrieve_chunks,
     retrieve_chunks_smart,
     retrieve_chunks_bm25,
@@ -23,6 +22,7 @@ from rag_index import (
 QA_OLLAMA_MODEL = os.getenv("QA_OLLAMA_MODEL", "qwen3:1.7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
 EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-5.4-mini")
+_CSV_ENCODINGS = ["utf-8-sig", "utf-8", "cp1254", "cp1252", "latin-1"]
 
 
 def load_questions(
@@ -32,17 +32,24 @@ def load_questions(
 ) -> List[Dict]:
     """
     Load questions and optional observation_idea from a CSV.
-    Column names are configurable via question_col and answer_col parameters.
+    Supports configurable headers and falls back to legacy "Questions"/"Answers".
     """
     items: List[Dict] = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
+    with _open_csv_safe(csv_path) as f:
         reader = csv.DictReader(f)
         for idx, row in enumerate(reader):
-            question = (row.get(question_col) or "").strip()
-            observation = (row.get(answer_col) or "").strip()
-EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4.1-mini")
-
-_CSV_ENCODINGS = ["utf-8-sig", "utf-8", "cp1254", "cp1252", "latin-1"]
+            question = (row.get(question_col) or row.get("Questions") or "").strip()
+            observation = (row.get(answer_col) or row.get("Answers") or "").strip()
+            if not question:
+                continue
+            items.append(
+                {
+                    "question_index": idx,
+                    "question": question,
+                    "observation_idea": observation,
+                }
+            )
+    return items
 
 
 def _open_csv_safe(path: str):
@@ -59,29 +66,6 @@ def _open_csv_safe(path: str):
             except Exception:
                 pass
     return open(path, newline="", encoding="utf-8", errors="replace")
-
-
-def load_questions(csv_path: str) -> List[Dict]:
-    """
-    Load questions and optional observation_idea (Answers) from a CSV.
-    Assumes headers: Questions, Answers (like sample_rag_input.csv).
-    """
-    items: List[Dict] = []
-    with _open_csv_safe(csv_path) as f:
-        reader = csv.DictReader(f)
-        for idx, row in enumerate(reader):
-            question = (row.get("Questions") or "").strip()
-            observation = (row.get("Answers") or "").strip()
-            if not question:
-                continue
-            items.append(
-                {
-                    "question_index": idx,
-                    "question": question,
-                    "observation_idea": observation,
-                }
-            )
-    return items
 
 
 def _build_rag_prompt(question: str, context: str) -> str:
@@ -226,69 +210,13 @@ def generate_rag_answer_ollama(
       - response_time_seconds: float
     """
     prompt = _build_rag_prompt(question, context)
-    if not base_url:
-        raise ValueError(
-            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
-            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
-        )
-    t0 = time.time()
-
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "stream": False,
-        },
+    return _collect_ollama_chat_response(
+        prompt=prompt,
+        model=model,
+        base_url=base_url,
         timeout=timeout,
+        think=think,
     )
-    dt = time.time() - t0
-    resp.raise_for_status()
-    data = resp.json()
-
-    answer = ""
-    # Typical Ollama /api/chat response: {"message": {"role": "assistant", "content": "..."}}
-    if isinstance(data, dict):
-        message = data.get("message") or {}
-        if isinstance(message, dict):
-            answer = str(message.get("content") or "")
-        elif "choices" in data:
-            # Fallback if future API resembles OpenAI style
-            choices = data.get("choices") or []
-            if choices:
-                msg = choices[0].get("message") or {}
-                answer = str(msg.get("content") or "")
-
-    answer = answer.replace("\r\n", "\n").strip()
-
-    # Optional token-level statistics from Ollama
-    eval_count = None
-    eval_duration_seconds = None
-    tokens_per_second = None
-    if isinstance(data, dict):
-        raw_eval_count = data.get("eval_count")
-        raw_eval_duration = data.get("eval_duration")
-        if isinstance(raw_eval_count, (int, float)) and isinstance(
-            raw_eval_duration, (int, float)
-        ):
-            eval_count = int(raw_eval_count)
-            # Ollama durations are in nanoseconds
-            eval_duration_seconds = float(raw_eval_duration) / 1e9
-            if eval_duration_seconds > 0:
-                tokens_per_second = eval_count / eval_duration_seconds
-
-    return {
-        "answer": answer,
-        "response_time_seconds": dt,
-        "eval_count": eval_count,
-        "eval_duration_seconds": eval_duration_seconds,
-        "tokens_per_second": tokens_per_second,
-    }
 
 
 def _build_no_rag_prompt(question: str) -> str:
@@ -319,66 +247,13 @@ def generate_no_rag_answer_ollama(
       - response_time_seconds: float
     """
     prompt = _build_no_rag_prompt(question)
-    if not base_url:
-        raise ValueError(
-            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
-            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
-        )
-    t0 = time.time()
-
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "stream": False,
-        },
+    return _collect_ollama_chat_response(
+        prompt=prompt,
+        model=model,
+        base_url=base_url,
         timeout=timeout,
+        think=think,
     )
-    dt = time.time() - t0
-    resp.raise_for_status()
-    data = resp.json()
-
-    answer = ""
-    if isinstance(data, dict):
-        message = data.get("message") or {}
-        if isinstance(message, dict):
-            answer = str(message.get("content") or "")
-        elif "choices" in data:
-            choices = data.get("choices") or []
-            if choices:
-                msg = choices[0].get("message") or {}
-                answer = str(msg.get("content") or "")
-
-    answer = answer.replace("\r\n", "\n").strip()
-
-    # Optional token-level statistics from Ollama
-    eval_count = None
-    eval_duration_seconds = None
-    tokens_per_second = None
-    if isinstance(data, dict):
-        raw_eval_count = data.get("eval_count")
-        raw_eval_duration = data.get("eval_duration")
-        if isinstance(raw_eval_count, (int, float)) and isinstance(
-            raw_eval_duration, (int, float)
-        ):
-            eval_count = int(raw_eval_count)
-            eval_duration_seconds = float(raw_eval_duration) / 1e9
-            if eval_duration_seconds > 0:
-                tokens_per_second = eval_count / eval_duration_seconds
-
-    return {
-        "answer": answer,
-        "response_time_seconds": dt,
-        "eval_count": eval_count,
-        "eval_duration_seconds": eval_duration_seconds,
-        "tokens_per_second": tokens_per_second,
-    }
 
 
 def get_openai_client(api_key: Optional[str] = None) -> OpenAI:
@@ -625,12 +500,10 @@ def run_full_pipeline(
       - Evaluate the answer and return flat dict rows.
 
     rag_mode: "rag" | "no_rag" | "both"
-    """
-    questions = load_questions(csv_path, question_col=question_col, answer_col=answer_col)
     smart_chunking: True ise child chunk eşleşmesi → parent bağlam ile çalışır.
     retrieval_mode: "vector" | "bm25"
     """
-    questions = load_questions(csv_path)
+    questions = load_questions(csv_path, question_col=question_col, answer_col=answer_col)
     if not questions:
         return []
 
