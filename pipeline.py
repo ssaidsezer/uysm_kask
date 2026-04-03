@@ -19,7 +19,7 @@ from rag_index import (
 
 QA_OLLAMA_MODEL = os.getenv("QA_OLLAMA_MODEL", "qwen3:1.7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
-EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4.1-mini")
+EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-5.4-mini")
 
 
 def load_questions(
@@ -291,27 +291,30 @@ def evaluate_answer(
         client = get_openai_client()
 
     system = (
-        "You are an evaluator in an automated pipeline.\n"
-        "Return ONE flat JSON object with exactly these keys:\n"
+        "Sen taktik muharebe ve askeri eğitim alanında uzman bir otomatik değerlendirici modelsin.\n"
+        "Aşağıdaki kurallara kesinlikle uy:\n"
+        "- Yalnızca tek bir düz JSON nesnesi döndür; başka hiçbir metin ekleme.\n"
+        "- Tüm string değerleri Türkçe yaz.\n"
+        "- 'ai_verdict' için SADECE şu değerlerden birini kullan: correct | partial | incorrect\n"
+        "  * correct: cevap beklenenle büyük ölçüde örtüşüyor, kritik bilgi eksik değil\n"
+        "  * partial: cevap kısmen doğru fakat önemli detay eksik ya da yanıltıcı\n"
+        "  * incorrect: cevap yanlış, tehlikeli veya tamamen alakasız\n"
+        "- 'ai_score' 0-10 arası tam sayı olsun (10=mükemmel, 5=kısmen doğru, 0=yanlış/tehlikeli)\n"
+        "- 'ai_hallucination_risk' için SADECE şu değerlerden birini kullan: low | medium | high\n"
+        "- 'ai_reason' en fazla 2 kısa Türkçe cümle; neyin doğru/yanlış olduğunu açıkla\n\n"
+        "Döndürülecek JSON şeması (başka alan ekleme):\n"
         "{\n"
-        '  "model": string,\n'
-        '  "question_index": integer,\n'
-        '  "question": string,\n'
-        '  "model_answer": string,\n'
-        '  "response_time_seconds": number,\n'
-        '  "ai_verdict": string,  // must be exactly one of: correct | partially_correct | incomplete | incorrect\n'
-        '  "ai_score": integer  // 0-100\n'
+        '  "ai_verdict": "correct" veya "partial" veya "incorrect",\n'
+        '  "ai_score": 0-10 tam sayı,\n'
+        '  "ai_hallucination_risk": "low" veya "medium" veya "high",\n'
+        '  "ai_reason": string\n'
         "}\n"
-        "JSON only, no extra text."
     )
 
     user = (
-        f'model: "{record["model"]}"\n'
-        f"question_index: {int(record['question_index'])}\n"
-        f'question: "{record["question"]}"\n'
-        f'expected_answer: "{record.get("observation_idea", "")}"\n'
-        f'model_answer: "{record.get("model_answer", "")}"\n'
-        f"response_time_seconds: {float(record.get('response_time_seconds', 0.0))}\n"
+        f'Soru: "{record["question"]}"\n'
+        f'Beklenen cevap: "{record.get("observation_idea", "")}"\n'
+        f'Modelin cevabı: "{record.get("model_answer", "")}"\n'
     )
 
     response = client.chat.completions.create(
@@ -321,6 +324,7 @@ def evaluate_answer(
             {"role": "user", "content": user},
         ],
         response_format={"type": "json_object"},
+        reasoning_effort="medium",
     )
 
     msg = response.choices[0].message
@@ -358,34 +362,37 @@ def _evaluate_answer_local(
     OpenAI yerine yerel bir modeli (örn. Ollama) eval için kullan.
     """
     system = (
-        "You are an evaluator in an automated pipeline.\n"
-        "Return ONE flat JSON object with exactly these keys:\n"
+        "Sen taktik muharebe ve askeri eğitim alanında uzman bir otomatik değerlendirici modelsin.\n"
+        "Aşağıdaki kurallara kesinlikle uy:\n"
+        "- Yalnızca tek bir düz JSON nesnesi döndür; başka hiçbir metin ekleme.\n"
+        "- Tüm string değerleri Türkçe yaz.\n"
+        "- 'ai_verdict' için SADECE şu değerlerden birini kullan: correct | partial | incorrect\n"
+        "  * correct: cevap beklenenle büyük ölçüde örtüşüyor, kritik bilgi eksik değil\n"
+        "  * partial: cevap kısmen doğru fakat önemli detay eksik ya da yanıltıcı\n"
+        "  * incorrect: cevap yanlış, tehlikeli veya tamamen alakasız\n"
+        "- 'ai_score' 0-10 arası tam sayı olsun (10=mükemmel, 5=kısmen doğru, 0=yanlış/tehlikeli)\n"
+        "- 'ai_hallucination_risk' için SADECE şu değerlerden birini kullan: low | medium | high\n"
+        "- 'ai_reason' en fazla 2 kısa Türkçe cümle; neyin doğru/yanlış olduğunu açıkla\n\n"
+        "Döndürülecek JSON şeması (başka alan ekleme):\n"
         "{\n"
-        '  \"model\": string,\n'
-        '  \"question_index\": integer,\n'
-        '  \"question\": string,\n'
-        '  \"model_answer\": string,\n'
-        '  \"response_time_seconds\": number,\n'
-        '  \"ai_verdict\": string,  // must be exactly one of: correct | partially_correct | incomplete | incorrect\n'
-        '  \"ai_score\": integer  // 0-100\n'
+        '  \"ai_verdict\": \"correct\" veya \"partial\" veya \"incorrect\",\n'
+        '  \"ai_score\": 0-10 tam sayı,\n'
+        '  \"ai_hallucination_risk\": \"low\" veya \"medium\" veya \"high\",\n'
+        '  \"ai_reason\": string\n'
         "}\n"
-        "JSON only, no extra text."
     )
 
     user = (
-        f'model: "{record["model"]}"\n'
-        f"question_index: {int(record['question_index'])}\n"
-        f'question: "{record["question"]}"\n'
-        f'expected_answer: "{record.get("observation_idea", "")}"\n'
-        f'model_answer: "{record.get("model_answer", "")}"\n'
-        f"response_time_seconds: {float(record.get('response_time_seconds', 0.0))}\n"
+        f'Soru: "{record["question"]}"\n'
+        f'Beklenen cevap: "{record.get("observation_idea", "")}"\n'
+        f'Modelin cevabı: "{record.get("model_answer", "")}"\n'
     )
 
     prompt = (
         system
         + "\n\n"
         + user
-        + "\n\nYukarıdaki talimatlara göre SADECE geçerli bir JSON nesnesi üret."
+        + "\n\nYukarıdaki talimatlara göre SADECE geçerli bir JSON nesnesi üret. Başka metin ekleme."
     )
 
     if not base_url:
@@ -504,7 +511,7 @@ def run_full_pipeline(
     if eval_enabled and eval_backend == "openai" and openai_client is None:
         openai_client = get_openai_client()
 
-    _REMOVE_COLS = {"observation_idea", "ai_hallucination_risk", "ai_strengths", "ai_issues", "ai_suggested_fix"}
+    _REMOVE_COLS = {"observation_idea", "ai_strengths", "ai_issues", "ai_suggested_fix"}
 
     rows: List[Dict] = []
 
@@ -536,15 +543,18 @@ def run_full_pipeline(
                 "observation_idea": observation_idea,
                 "model_answer": rag_result.get("answer", ""),
                 "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
+                "eval_duration_seconds": rag_result.get("eval_duration_seconds"),
+                "tokens_per_second": rag_result.get("tokens_per_second"),
             }
             if eval_enabled:
-                eval_row = evaluate_answer_any(
+                eval_fields = evaluate_answer_any(
                     record=record,
                     eval_model=eval_model,
                     client=openai_client if eval_backend == "openai" else None,
                     backend=eval_backend,
                     local_model=eval_local_model,
                 )
+                eval_row = {**record, **eval_fields}
             else:
                 eval_row = {**record}
             for col in _REMOVE_COLS:
@@ -575,15 +585,18 @@ def run_full_pipeline(
                 "observation_idea": observation_idea,
                 "model_answer": no_rag_result.get("answer", ""),
                 "response_time_seconds": no_rag_result.get("response_time_seconds", 0.0),
+                "eval_duration_seconds": no_rag_result.get("eval_duration_seconds"),
+                "tokens_per_second": no_rag_result.get("tokens_per_second"),
             }
             if eval_enabled:
-                eval_row = evaluate_answer_any(
+                eval_fields = evaluate_answer_any(
                     record=record,
                     eval_model=eval_model,
                     client=openai_client if eval_backend == "openai" else None,
                     backend=eval_backend,
                     local_model=eval_local_model,
                 )
+                eval_row = {**record, **eval_fields}
             else:
                 eval_row = {**record}
             for col in _REMOVE_COLS:
