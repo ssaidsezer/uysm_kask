@@ -513,6 +513,7 @@ def run_full_pipeline(
     smart_chunking: bool = False,
     score_threshold: float = 0.55,
     retrieval_mode: str = "vector",
+    embed_model: str = "",
 ) -> List[Dict]:
     """
     High-level helper:
@@ -565,6 +566,7 @@ def run_full_pipeline(
                     k=k,
                     qdrant_url=qdrant_url,
                     score_threshold=score_threshold,
+                    embed_model=embed_model or None,
                 )
             else:
                 chunks = retrieve_chunks(
@@ -573,6 +575,7 @@ def run_full_pipeline(
                     k=k,
                     qdrant_url=qdrant_url,
                     score_threshold=score_threshold,
+                    embed_model=embed_model or None,
                 )
             context = "\n\n".join(c["text"] for c in chunks)
             rag_result = generate_rag_answer_ollama(

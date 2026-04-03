@@ -751,12 +751,10 @@ def main() -> None:
             st.error(f"Embedding modelleri yüklenemedi: {msg} Ollama bağlantısını kontrol et.")
             st.stop()
         else:
-            default_embed = os.environ.get("OLLAMA_EMBED_MODEL", "")
-            default_index = embed_models.index(default_embed) if default_embed in embed_models else 0
             embed_model_name = st.selectbox(
                 "Embedding modeli",
                 options=embed_models,
-                index=default_index,
+                index=0,
                 help="PDF'leri indekslemek için kullanılacak Ollama embedding modeli.",
             )
 
@@ -1119,66 +1117,54 @@ def main() -> None:
         csv_smart_rag = csv_rag_type in ("Smart", "BM25 Smart")
         csv_retrieval_mode = "bm25" if csv_rag_type.startswith("BM25") else "vector"
 
-        csv_col_emb, csv_col_c1, csv_col_c2 = st.columns([2, 1, 1])
-        with csv_col_emb:
-            csv_embed_model = st.selectbox(
-                "Embedding modeli",
-                options=csv_embed_models,
-                key="csv_embed_model",
-                help="İndekslemede kullandığınız embedding modeli.",
-            )
-        with csv_col_c1:
-            if csv_smart_rag:
-                csv_child_size = st.number_input(
-                    "Child chunk boyutu",
-                    min_value=100, max_value=3000,
-                    value=SMART_CHILD_SIZE, step=100,
-                    key="csv_child_size",
-                )
-            else:
-                csv_chunk_size = st.number_input(
-                    "Chunk boyutu",
-                    min_value=100, max_value=5000,
-                    value=1000, step=100,
-                    key="csv_chunk_size",
-                )
-        with csv_col_c2:
-            if csv_smart_rag:
-                csv_child_overlap = st.number_input(
-                    "Child overlap",
-                    min_value=0, max_value=500,
-                    value=SMART_CHILD_OVERLAP, step=50,
-                    key="csv_child_overlap",
-                )
-                csv_parent_size = st.number_input(
-                    "Parent boyutu",
-                    min_value=500, max_value=10000,
-                    value=SMART_PARENT_BLOCK_SIZE, step=500,
-                    key="csv_parent_size",
-                )
-            else:
-                csv_chunk_overlap = st.number_input(
-                    "Chunk overlap",
-                    min_value=0, max_value=1000,
-                    value=200, step=50,
-                    key="csv_chunk_overlap",
-                )
+        csv_embed_model = st.selectbox(
+            "Embedding modeli",
+            options=csv_embed_models,
+            key="csv_embed_model",
+            help="İndekslemede kullandığınız embedding modeli.",
+        )
+
+        all_qdrant_cols = _list_qdrant_collections()
+        safe_embed = csv_embed_model.replace(":", "_").replace("/", "_").replace(".", "_") if csv_embed_model else ""
 
         if csv_smart_rag:
-            csv_collection_name = _smart_collection_name_full(
-                collection_name, csv_embed_model,
-                int(csv_parent_size), int(csv_child_size), int(csv_child_overlap),
-            )
-            st.caption(
-                f"Koleksiyonlar: **{csv_collection_name}_children** (arama) / "
-                f"**{csv_collection_name}_parents** (bağlam)"
-            )
+            smart_cols = sorted({
+                c[: -len("_children")]
+                for c in all_qdrant_cols
+                if c.endswith("_children") and safe_embed in c
+            })
+            if smart_cols:
+                csv_collection_name = st.selectbox(
+                    "Smart koleksiyon",
+                    options=smart_cols,
+                    key="csv_smart_col_select",
+                    help="İndekslemede oluşturulan koleksiyonu seçin.",
+                )
+                st.caption(
+                    f"Children: `{csv_collection_name}_children` / "
+                    f"Parents: `{csv_collection_name}_parents`"
+                )
+            else:
+                st.warning(f"'{csv_embed_model}' modeline ait Smart koleksiyon bulunamadı. Önce Smart indeksleme yapın.")
+                csv_collection_name = ""
         else:
-            csv_collection_name = _collection_name_full(
-                collection_name, csv_embed_model,
-                int(csv_chunk_size), int(csv_chunk_overlap),
+            classic_cols = sorted(
+                c for c in all_qdrant_cols
+                if safe_embed in c
+                and not c.endswith("_children")
+                and not c.endswith("_parents")
             )
-            st.caption(f"Koleksiyon: **{csv_collection_name}**")
+            if classic_cols:
+                csv_collection_name = st.selectbox(
+                    "Klasik koleksiyon",
+                    options=classic_cols,
+                    key="csv_classic_col_select",
+                    help="İndekslemede oluşturulan koleksiyonu seçin.",
+                )
+                st.caption(f"Koleksiyon: `{csv_collection_name}`")
+            else:
+                st.warning(f"'{csv_embed_model}' modeline ait Klasik koleksiyon bulunamadı. Önce indeksleme yapın.")
+                csv_collection_name = ""
 
         col_k, col_rag_mode = st.columns(2)
         with col_rag_mode:
@@ -1256,6 +1242,7 @@ def main() -> None:
                             smart_chunking=csv_smart_rag,
                             score_threshold=float(csv_score_threshold),
                             retrieval_mode=csv_retrieval_mode,
+                            embed_model=csv_embed_model,
                         )
                         rows.extend(model_rows)
                 except Exception as exc:

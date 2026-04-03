@@ -25,7 +25,7 @@ except ImportError:
 # Config  – .env dosyasından veya ortam değişkenlerinden okunur
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_EMBED_MODEL = ""
 QDRANT_URL = os.getenv("QDRANT_URL", "http://192.168.0.149:6333")
 DEFAULT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "uysm")
 DEBUG_LOG_PATH = os.path.join(os.path.dirname(__file__), "debug-3c80e4.log")
@@ -233,6 +233,37 @@ def _snap_to_word_boundary(text: str, pos: int) -> int:
     return pos
 
 
+def _snap_to_sentence_boundary(text: str, pos: int, max_lookback: int = 400) -> int:
+    """
+    pos'tan geriye doğru cümle sonu noktalama işareti arar: '. ', '! ', '? '
+    veya bunların \\n ile bitmesi.  Bulursa noktalama sonrasını döndürür
+    (yeni cümle başı).  Bulamazsa _snap_to_word_boundary'ye düşer.
+    """
+    if pos <= 0 or pos >= len(text):
+        return pos
+    limit = max(pos - max_lookback, 0)
+    for i in range(pos - 1, limit, -1):
+        if text[i] in ".!?" and i + 1 < len(text) and text[i + 1] in (" ", "\n", "\t"):
+            return i + 1
+    return _snap_to_word_boundary(text, pos)
+
+
+def _snap_to_best_boundary(text: str, pos: int, max_lookback: int = 400) -> int:
+    """
+    Önce paragraf sonu (\\n\\n), sonra cümle sonu, en son kelime sınırını dener.
+    Hiyerarşik tercih: paragraph > sentence > word.
+    """
+    if pos <= 0 or pos >= len(text):
+        return pos
+    limit = max(pos - max_lookback, 0)
+    # 1. Paragraf sonu (\n\n)
+    for i in range(pos - 1, limit, -1):
+        if text[i] == "\n" and i > 0 and text[i - 1] == "\n":
+            return i + 1
+    # 2. Cümle sonu, bulamazsa kelime sınırı
+    return _snap_to_sentence_boundary(text, pos, max_lookback)
+
+
 def _chunk_text(
     text: str,
     chunk_size: int = 1000,
@@ -250,7 +281,7 @@ def _chunk_text(
     while start < length:
         end = min(start + chunk_size, length)
         if end < length:
-            end = _snap_to_word_boundary(text, end)
+            end = _snap_to_best_boundary(text, end)
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
@@ -655,7 +686,7 @@ def _split_into_parent_blocks(
     while start < len(text):
         end = min(start + parent_size, len(text))
         if end < len(text):
-            end = _snap_to_word_boundary(text, end)
+            end = _snap_to_best_boundary(text, end)
         block = text[start:end].strip()
         if block:
             blocks.append(block)
@@ -952,7 +983,7 @@ def _split_children_from_parent(
     while start < len(text):
         end = min(start + child_size, len(text))
         if end < len(text):
-            end = _snap_to_word_boundary(text, end)
+            end = _snap_to_sentence_boundary(text, end)
         chunk = text[start:end].strip()
         if chunk:
             children.append(
