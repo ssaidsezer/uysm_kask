@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -58,11 +59,6 @@ def _get_ollama_base_url() -> str:
     return base_url.rstrip("/")
 
 
-def _collection_name_for_model(base: str, embed_model: str) -> str:
-    """Embedding modeline özgü collection adı üretir. bge-m3:latest → {base}_bge-m3_latest"""
-    safe = embed_model.replace(":", "_").replace("/", "_").replace(".", "_")
-    return f"{base}_{safe}"
-
 def _collection_name_full(
     base: str, embed_model: str, chunk_size: int, chunk_overlap: int
 ) -> str:
@@ -105,35 +101,12 @@ def _collection_options_for_embed(
     )
     return classic_cols, smart_bases
 
-def _render_phase_row(
-    placeholder,
-    label: str,
-    status: str,
-    current: int,
-    total: int,
-    elapsed: float | None,
-) -> None:
-    """Tek bir indeksleme aşamasını durumuna göre render eder.
-
-    status: "pending" | "running" | "done"
-    """
-    if status == "pending":
-        icon = "⏸️"
-        elapsed_str = "—"
-        progress_str = ""
-    elif status == "running":
-        icon = "🔄"
-        elapsed_str = f"{elapsed:.1f}s" if elapsed is not None else "..."
-        progress_str = f"&nbsp;&nbsp;`{current}/{total}`" if total > 0 else ""
-    else:  # done
-        icon = "✅"
-        elapsed_str = f"**{elapsed:.1f}s**" if elapsed is not None else "**—**"
-        progress_str = ""
-
-    placeholder.markdown(
-        f"{icon}&nbsp;&nbsp;{label}{('&nbsp;&nbsp;' + progress_str) if progress_str else ''}"
-        f"&nbsp;&nbsp;&nbsp;&nbsp;{elapsed_str}"
-    )
+@dataclass
+class RetrievalSelection:
+    embed_model: str | None
+    collection_name: str
+    smart_rag: bool
+    retrieval_mode: str
 
 
 def _is_embedding_model(host: str, model_name: str) -> bool:
@@ -714,6 +687,86 @@ def _render_eval_settings(all_models: List[str], key_prefix: str):
     return True, eval_backend, eval_model_name, local_eval_model_name
 
 
+def _render_collection_selection(
+    *,
+    shared_embed_models: List[str],
+    collection_name: str,
+    key_prefix: str,
+    embed_label: str,
+    rag_type_label: str,
+    rag_type_help: str,
+    rag_type_horizontal: bool,
+    classic_label: str,
+    smart_label: str,
+    classic_help: str,
+    smart_help: str,
+    classic_caption_prefix: str,
+    smart_caption_prefix: str,
+) -> RetrievalSelection:
+    collections, coll_err = _list_qdrant_collections()
+    if coll_err:
+        st.warning(coll_err)
+        collections = []
+
+    if not shared_embed_models:
+        return RetrievalSelection(
+            embed_model=None,
+            collection_name=collection_name,
+            smart_rag=False,
+            retrieval_mode="vector",
+        )
+
+    embed_model = st.selectbox(
+        embed_label,
+        options=shared_embed_models,
+        key=f"{key_prefix}_embed_model",
+    )
+    classic_cols, smart_cols = _collection_options_for_embed(collections, embed_model)
+    rag_type = st.radio(
+        rag_type_label,
+        options=["Klasik", "Smart", "BM25 Klasik", "BM25 Smart"],
+        horizontal=rag_type_horizontal,
+        key=f"{key_prefix}_rag_type",
+        help=rag_type_help,
+    )
+    smart_rag = rag_type in ("Smart", "BM25 Smart")
+    retrieval_mode = "bm25" if rag_type.startswith("BM25") else "vector"
+
+    if smart_rag:
+        if smart_cols:
+            selected_collection = st.selectbox(
+                smart_label,
+                options=smart_cols,
+                key=f"{key_prefix}_smart_col_select",
+                help=smart_help,
+            )
+            st.caption(
+                f"{smart_caption_prefix}: **{selected_collection}_children** / **{selected_collection}_parents**"
+            )
+        else:
+            selected_collection = ""
+            st.warning(f"'{embed_model}' modeli için smart koleksiyon bulunamadı.")
+    else:
+        if classic_cols:
+            selected_collection = st.selectbox(
+                classic_label,
+                options=classic_cols,
+                key=f"{key_prefix}_classic_col_select",
+                help=classic_help,
+            )
+            st.caption(f"{classic_caption_prefix}: **{selected_collection}**")
+        else:
+            selected_collection = ""
+            st.warning(f"'{embed_model}' modeli için klasik koleksiyon bulunamadı.")
+
+    return RetrievalSelection(
+        embed_model=embed_model,
+        collection_name=selected_collection,
+        smart_rag=smart_rag,
+        retrieval_mode=retrieval_mode,
+    )
+
+
 @st.fragment
 def _render_csv_eval_tab(
     connection_error: str | None,
@@ -758,61 +811,26 @@ def _render_csv_eval_tab(
             value=not uploaded_csv,
         )
 
-    collections, coll_err = _list_qdrant_collections()
-    if coll_err:
-        st.warning(coll_err)
-        collections = []
-
-    csv_smart_rag = False
-    csv_retrieval_mode = "vector"
+    retrieval_selection = _render_collection_selection(
+        shared_embed_models=shared_embed_models,
+        collection_name=collection_name,
+        key_prefix="csv",
+        embed_label="Embedding modeli (indexleme ile aynı olmalı)",
+        rag_type_label="RAG modu (indeksleme ile aynı olmalı)",
+        rag_type_help="BM25 anahtar kelime tabanlıdır. Smart mod parent/child koleksiyonlarını kullanır.",
+        rag_type_horizontal=True,
+        classic_label="Klasik koleksiyon",
+        smart_label="Smart koleksiyon",
+        classic_help="İndeksleme tabında oluşturulan klasik koleksiyonu seçin.",
+        smart_help="İndeksleme tabında oluşturulan smart base koleksiyonu seçin.",
+        classic_caption_prefix="Kullanılacak koleksiyon",
+        smart_caption_prefix="Kullanılacak koleksiyonlar",
+    )
+    csv_embed_model = retrieval_selection.embed_model
+    csv_collection_name = retrieval_selection.collection_name
+    csv_smart_rag = retrieval_selection.smart_rag
+    csv_retrieval_mode = retrieval_selection.retrieval_mode
     csv_score_threshold = 0.55
-
-    if shared_embed_models:
-        csv_embed_model = st.selectbox(
-            "Embedding modeli (indexleme ile aynı olmalı)",
-            options=shared_embed_models,
-            key="csv_embed_model",
-        )
-        classic_cols, smart_cols = _collection_options_for_embed(collections, csv_embed_model)
-        csv_rag_type = st.radio(
-            "RAG modu (indeksleme ile aynı olmalı)",
-            options=["Klasik", "Smart", "BM25 Klasik", "BM25 Smart"],
-            horizontal=True,
-            key="csv_rag_type",
-            help="BM25 anahtar kelime tabanlıdır. Smart mod parent/child koleksiyonlarını kullanır.",
-        )
-        csv_smart_rag = csv_rag_type in ("Smart", "BM25 Smart")
-        csv_retrieval_mode = "bm25" if csv_rag_type.startswith("BM25") else "vector"
-
-        if csv_smart_rag:
-            if smart_cols:
-                csv_collection_name = st.selectbox(
-                    "Smart koleksiyon",
-                    options=smart_cols,
-                    key="csv_smart_col_select",
-                    help="İndeksleme tabında oluşturulan smart base koleksiyonu seçin.",
-                )
-                st.caption(
-                    f"Kullanılacak koleksiyonlar: **{csv_collection_name}_children** / **{csv_collection_name}_parents**"
-                )
-            else:
-                csv_collection_name = ""
-                st.warning(f"'{csv_embed_model}' modeli için smart koleksiyon bulunamadı.")
-        else:
-            if classic_cols:
-                csv_collection_name = st.selectbox(
-                    "Klasik koleksiyon",
-                    options=classic_cols,
-                    key="csv_classic_col_select",
-                    help="İndeksleme tabında oluşturulan klasik koleksiyonu seçin.",
-                )
-                st.caption(f"Kullanılacak koleksiyon: **{csv_collection_name}**")
-            else:
-                csv_collection_name = ""
-                st.warning(f"'{csv_embed_model}' modeli için klasik koleksiyon bulunamadı.")
-    else:
-        csv_embed_model = None
-        csv_collection_name = collection_name
 
     col_k, col_rag_mode, col_think = st.columns([2, 2, 1])
     with col_rag_mode:
@@ -978,67 +996,29 @@ def _render_csv_eval_tab(
             )
 
 
-def main() -> None:
-    st.set_page_config(page_title="RAG Değerlendirme Pipeline", layout="wide")
-
-    # Selectbox dropdown stilini düzelt (koyu temada okunabilirlik)
-    st.markdown(
-        """
-        <style>
-        /* Dropdown listesi arka planı ve metin rengi */
-        div[data-baseweb="popover"] ul {
-            background-color: #1e1e1e;
-        }
-        div[data-baseweb="popover"] li {
-            color: #fafafa;
-        }
-        div[data-baseweb="popover"] li:hover {
-            background-color: #333333;
-        }
-        /* Seçili öğe vurgusu */
-        div[data-baseweb="popover"] li[aria-selected="true"] {
-            background-color: #404040;
-        }
-        /* Selectbox border rengini yumuşat */
-        div[data-baseweb="select"] > div {
-            border-color: #555555;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.title("RAG + Değerlendirme Pipeline")
-    st.write(
-        "PDF tabanlı Türkçe RAG sistemi: "
-        "PDF'leri Qdrant'a indeksle (Ollama embedding ile), CSV'den soruları değerlendir, "
-        "cevapları Ollama ile üret ve değerlendir."
-    )
-
-    # === Sidebar: Sistem Kaynakları İzleme ===
+def _render_sidebar_monitor() -> None:
     with st.sidebar:
         st.subheader("🧠 Sunucu Kaynakları")
         monitor_url = os.environ.get("MONITOR_URL", "http://192.168.1.151:8081")
-        
+
         st.caption(f"Hedef: {monitor_url}")
         if st.button("🔄 Kaynakları Yenile"):
-            pass # Streamlit automaticaly reruns the script
-            
+            pass
+
         try:
             m_resp = requests.get(f"{monitor_url}/stats", timeout=3)
             if m_resp.status_code == 200:
                 stats = m_resp.json()
-                
+
                 cpu_val = stats.get("cpu_usage", 0.0)
                 gpu_val = stats.get("gpu_usage", 0.0)
                 vram_u = stats.get("vram_used", 0)
                 vram_t = stats.get("vram_total", 0)
-                
-                # Layout in columns
+
                 c1, c2 = st.columns(2)
                 c1.metric("CPU", f"%{cpu_val:.1f}")
                 c2.metric("GPU", f"%{gpu_val:.1f}")
-                
+
                 if vram_t > 0:
                     vram_pct = (float(vram_u) / float(vram_t)) * 100
                     st.metric("VRAM", f"{vram_u} / {vram_t} MB", f"%{vram_pct:.1f} dolu", delta_color="off")
@@ -1046,13 +1026,11 @@ def main() -> None:
                     st.metric("VRAM", f"{vram_u} MB", "Bilgi alınamadı", delta_color="off")
             else:
                 st.error("Sistem bilgisi alınamadı.")
-        except Exception as e:
+        except Exception:
             st.error("Monitor servisine ulaşılamadı. Lütfen sunucudaki Docker'ın açık olduğundan ve port 8081'in açık olduğundan emin olun.")
 
-    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-    qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
-    collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
 
+def _render_connection_status(qdrant_url: str) -> None:
     conn_cols = st.columns(2)
     with conn_cols[0]:
         try:
@@ -1072,461 +1050,407 @@ def main() -> None:
             except Exception:
                 st.error(f"Ollama erişilemiyor ({ollama_base})")
 
-    # Ollama model listesi — cache'li, iki tab'da paylaşılır
-    ollama_models, connection_error, _filter_elapsed, filtered_count = _list_ollama_models()
-    if connection_error:
-        all_models: List[str] = []
-    else:
-        all_models = sorted({m for m in ollama_models if m})
+def _render_index_tab(
+    all_models: List[str],
+    shared_embed_models: List[str],
+    collection_name: str,
+    qdrant_url: str,
+) -> None:
+    st.subheader("PDF'leri Qdrant'a indeksle (Ollama Embedding)")
 
-    # Embedding modelleri — tablardan önce tek seferinde çekilir, hata bir kez gösterilir
-    shared_embed_models, shared_embed_err = _list_embedding_models()
-    if shared_embed_err or not shared_embed_models:
-        _embed_msg = shared_embed_err or "Sunucuda hiç embedding modeli bulunamadı."
-        st.error(f"Embedding modelleri yüklenemedi: {_embed_msg} Ollama bağlantısını kontrol et.")
-
-    tab_index, tab_eval, tab_chat, tab_voice, tab_manage, tab_analysis = st.tabs(
-        ["PDF İndeksleme", "CSV Değerlendirme", "Manuel Chat Eval", "Sesli Değerlendirme", "Yönetim", "Sonuç Analizi"]
+    uploaded_pdfs = st.file_uploader(
+        "PDF yükle",
+        type=["pdf"],
+        accept_multiple_files=True,
     )
 
-    # =========================================================================
-    # TAB 1: PDF İndeksleme (Qdrant + Ollama Embedding)
-    # =========================================================================
-    with tab_index:
-        st.subheader("PDF'leri Qdrant'a indeksle (Ollama Embedding)")
+    index_mode = st.radio(
+        "İndeksleme modu",
+        options=["Klasik (sabit boyut chunking)", "Smart (LLM semantik chunking)"],
+        horizontal=True,
+        key="index_mode",
+    )
+    use_smart_index = index_mode.startswith("Smart")
 
-        uploaded_pdfs = st.file_uploader(
-            "PDF yükle",
-            type=["pdf"],
-            accept_multiple_files=True,
+    chunk_size = int(os.environ.get("CHUNK_SIZE", "1000"))
+    chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "200"))
+    smart_parent_size = SMART_PARENT_BLOCK_SIZE
+    smart_child_size = SMART_CHILD_SIZE
+    smart_child_overlap = SMART_CHILD_OVERLAP
+    smart_boundary_model = SMART_BOUNDARY_LLM_MODEL
+
+    if shared_embed_models:
+        default_embed = os.environ.get("OLLAMA_EMBED_MODEL", "")
+        default_index = shared_embed_models.index(default_embed) if default_embed in shared_embed_models else 0
+        embed_model_name = st.selectbox(
+            "Embedding modeli",
+            options=shared_embed_models,
+            index=default_index,
+            help="PDF'leri indekslemek için kullanılacak Ollama embedding modeli.",
         )
 
-        index_mode = st.radio(
-            "İndeksleme modu",
-            options=["Klasik (sabit boyut chunking)", "Smart (LLM semantik chunking)"],
-            horizontal=True,
-            key="index_mode",
-        )
-        use_smart_index = index_mode.startswith("Smart")
-
-        chunk_size = int(os.environ.get("CHUNK_SIZE", "1000"))
-        chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "200"))
-        smart_parent_size = SMART_PARENT_BLOCK_SIZE
-        smart_child_size = SMART_CHILD_SIZE
-        smart_child_overlap = SMART_CHILD_OVERLAP
-        smart_boundary_model = SMART_BOUNDARY_LLM_MODEL
-
-        if shared_embed_models:
-            default_embed = os.environ.get("OLLAMA_EMBED_MODEL", "")
-            default_index = shared_embed_models.index(default_embed) if default_embed in shared_embed_models else 0
-            embed_model_name = st.selectbox(
-                "Embedding modeli",
-                options=shared_embed_models,
-                index=default_index,
-                help="PDF'leri indekslemek için kullanılacak Ollama embedding modeli.",
-            )
-
-            if use_smart_index:
-                with st.expander("Smart Chunking Parametreleri", expanded=True):
-                    sc_col1, sc_col2, sc_col3 = st.columns(3)
-                    with sc_col1:
-                        smart_parent_size = st.number_input(
-                            "Parent blok boyutu (karakter)",
-                            min_value=500,
-                            max_value=10000,
-                            value=SMART_PARENT_BLOCK_SIZE,
-                            step=500,
-                            key="smart_parent_size",
-                            help="İlk ham bölümleme için büyük blok boyutu.",
-                        )
-                    with sc_col2:
-                        smart_child_size = st.number_input(
-                            "Child chunk boyutu (karakter)",
-                            min_value=100,
-                            max_value=3000,
-                            value=SMART_CHILD_SIZE,
-                            step=100,
-                            key="smart_child_size",
-                            help="Embedding için küçük child chunk boyutu.",
-                        )
-                    with sc_col3:
-                        smart_child_overlap = st.number_input(
-                            "Child overlap (karakter)",
-                            min_value=0,
-                            max_value=500,
-                            value=SMART_CHILD_OVERLAP,
-                            step=50,
-                            key="smart_child_overlap",
-                        )
-                    boundary_llm_opts = all_models if all_models else []
-                    boundary_default = (
-                        boundary_llm_opts.index(SMART_BOUNDARY_LLM_MODEL)
-                        if SMART_BOUNDARY_LLM_MODEL in boundary_llm_opts
-                        else 0
+        if use_smart_index:
+            with st.expander("Smart Chunking Parametreleri", expanded=True):
+                sc_col1, sc_col2, sc_col3 = st.columns(3)
+                with sc_col1:
+                    smart_parent_size = st.number_input(
+                        "Parent blok boyutu (karakter)",
+                        min_value=500,
+                        max_value=10000,
+                        value=SMART_PARENT_BLOCK_SIZE,
+                        step=500,
+                        key="smart_parent_size",
+                        help="İlk ham bölümleme için büyük blok boyutu.",
                     )
-                    smart_boundary_model = st.selectbox(
-                        "Sınır tespiti LLM modeli",
-                        options=boundary_llm_opts if boundary_llm_opts else ["Model Yok"],
-                        index=boundary_default if boundary_llm_opts else 0,
-                        key="smart_boundary_model",
-                        help="Semantik sınırları belirlemek için kullanılacak Ollama modeli.",
-                    )
-
-                index_collection_name = _smart_collection_name_full(
-                    collection_name,
-                    embed_model_name,
-                    int(smart_parent_size),
-                    int(smart_child_size),
-                    int(smart_child_overlap),
-                )
-                st.info(
-                    f"Smart RAG | Embedding: **{embed_model_name}** | "
-                    f"Sınır LLM: **{smart_boundary_model}** | "
-                    f"Koleksiyonlar: **{index_collection_name}_parents** / **{index_collection_name}_children** | "
-                    f"Qdrant: **{qdrant_url}**"
-                )
-                if int(smart_child_size) >= int(smart_parent_size):
-                    st.warning(
-                        f"Child chunk boyutu ({smart_child_size}) parent boyutuna ({smart_parent_size}) eşit veya büyük. "
-                        "Her parent tek bir child olacak; Smart chunking'in hassas vektör arama avantajı azalır."
-                    )
-            else:
-                cl_col1, cl_col2 = st.columns(2)
-                with cl_col1:
-                    chunk_size = st.number_input(
-                        "Chunk boyutu (karakter)",
+                with sc_col2:
+                    smart_child_size = st.number_input(
+                        "Child chunk boyutu (karakter)",
                         min_value=100,
-                        max_value=5000,
-                        value=chunk_size,
+                        max_value=3000,
+                        value=SMART_CHILD_SIZE,
                         step=100,
-                        key="classic_chunk_size",
-                        help="Her chunk'ın maksimum karakter sayısı.",
+                        key="smart_child_size",
+                        help="Embedding için küçük child chunk boyutu.",
                     )
-                with cl_col2:
-                    chunk_overlap = st.number_input(
-                        "Chunk overlap (karakter)",
+                with sc_col3:
+                    smart_child_overlap = st.number_input(
+                        "Child overlap (karakter)",
                         min_value=0,
-                        max_value=1000,
-                        value=chunk_overlap,
+                        max_value=500,
+                        value=SMART_CHILD_OVERLAP,
                         step=50,
-                        key="classic_chunk_overlap",
-                        help="Ardışık chunk'lar arasındaki örtüşme miktarı.",
+                        key="smart_child_overlap",
                     )
-                index_collection_name = _collection_name_full(
-                    collection_name,
-                    embed_model_name,
-                    int(chunk_size),
-                    int(chunk_overlap),
+                boundary_llm_opts = all_models if all_models else []
+                boundary_default = (
+                    boundary_llm_opts.index(SMART_BOUNDARY_LLM_MODEL)
+                    if SMART_BOUNDARY_LLM_MODEL in boundary_llm_opts
+                    else 0
                 )
-                st.info(
-                    f"Klasik RAG | Embedding: **{embed_model_name}** | "
-                    f"Koleksiyon: **{index_collection_name}** | Qdrant: **{qdrant_url}**"
+                smart_boundary_model = st.selectbox(
+                    "Sınır tespiti LLM modeli",
+                    options=boundary_llm_opts if boundary_llm_opts else ["Model Yok"],
+                    index=boundary_default if boundary_llm_opts else 0,
+                    key="smart_boundary_model",
+                    help="Semantik sınırları belirlemek için kullanılacak Ollama modeli.",
                 )
 
-        if shared_embed_models and st.button("İndeksi oluştur / güncelle"):
-            pdf_paths: List[Path] = []
+            index_collection_name = _smart_collection_name_full(
+                collection_name,
+                embed_model_name,
+                int(smart_parent_size),
+                int(smart_child_size),
+                int(smart_child_overlap),
+            )
+            st.info(
+                f"Smart RAG | Embedding: **{embed_model_name}** | "
+                f"Sınır LLM: **{smart_boundary_model}** | "
+                f"Koleksiyonlar: **{index_collection_name}_parents** / **{index_collection_name}_children** | "
+                f"Qdrant: **{qdrant_url}**"
+            )
+            if int(smart_child_size) >= int(smart_parent_size):
+                st.warning(
+                    f"Child chunk boyutu ({smart_child_size}) parent boyutuna ({smart_parent_size}) eşit veya büyük. "
+                    "Her parent tek bir child olacak; Smart chunking'in hassas vektör arama avantajı azalır."
+                )
+        else:
+            cl_col1, cl_col2 = st.columns(2)
+            with cl_col1:
+                chunk_size = st.number_input(
+                    "Chunk boyutu (karakter)",
+                    min_value=100,
+                    max_value=5000,
+                    value=chunk_size,
+                    step=100,
+                    key="classic_chunk_size",
+                    help="Her chunk'ın maksimum karakter sayısı.",
+                )
+            with cl_col2:
+                chunk_overlap = st.number_input(
+                    "Chunk overlap (karakter)",
+                    min_value=0,
+                    max_value=1000,
+                    value=chunk_overlap,
+                    step=50,
+                    key="classic_chunk_overlap",
+                    help="Ardışık chunk'lar arasındaki örtüşme miktarı.",
+                )
+            index_collection_name = _collection_name_full(
+                collection_name,
+                embed_model_name,
+                int(chunk_size),
+                int(chunk_overlap),
+            )
+            st.info(
+                f"Klasik RAG | Embedding: **{embed_model_name}** | "
+                f"Koleksiyon: **{index_collection_name}** | Qdrant: **{qdrant_url}**"
+            )
 
-            if uploaded_pdfs:
-                tmp_dir = _ensure_tmp_dir()
-                for up in uploaded_pdfs:
-                    tmp_path = tmp_dir / up.name
-                    with tmp_path.open("wb") as f:
-                        f.write(up.getbuffer())
-                    pdf_paths.append(tmp_path)
+    if shared_embed_models and st.button("İndeksi oluştur / güncelle"):
+        pdf_paths: List[Path] = []
 
-            if not pdf_paths:
-                st.error("İndekslenecek PDF bulunamadı.")
+        if uploaded_pdfs:
+            tmp_dir = _ensure_tmp_dir()
+            for up in uploaded_pdfs:
+                tmp_path = tmp_dir / up.name
+                with tmp_path.open("wb") as f:
+                    f.write(up.getbuffer())
+                pdf_paths.append(tmp_path)
+
+        if not pdf_paths:
+            st.error("İndekslenecek PDF bulunamadı.")
+        else:
+            try:
+                progress_bar = st.progress(0, text="Hazırlanıyor...")
+                status_text = st.empty()
+
+                if use_smart_index:
+                    phase_labels = {
+                        "pdf_extract": "PDF'ler okunuyor",
+                        "llm_boundary": "LLM semantik sınırlar belirleniyor",
+                        "parent_store": "Parent bloklar Qdrant'a yazılıyor",
+                        "child_embed": "Child embedding hesaplanıyor",
+                        "child_upsert": "Child chunk'lar Qdrant'a yazılıyor",
+                    }
+                    phase_weights = {
+                        "pdf_extract": 0.08,
+                        "llm_boundary": 0.42,
+                        "parent_store": 0.10,
+                        "child_embed": 0.25,
+                        "child_upsert": 0.15,
+                    }
+                    phase_starts = {
+                        "pdf_extract": 0.0,
+                        "llm_boundary": 0.08,
+                        "parent_store": 0.50,
+                        "child_embed": 0.60,
+                        "child_upsert": 0.85,
+                    }
+                else:
+                    phase_labels = {
+                        "pdf_extract": "PDF'ler okunuyor",
+                        "ollama_embed": "Ollama embedding hesaplanıyor",
+                        "qdrant_upsert": "Qdrant'a yazılıyor",
+                    }
+                    phase_weights = {
+                        "pdf_extract": 0.10,
+                        "ollama_embed": 0.70,
+                        "qdrant_upsert": 0.20,
+                    }
+                    phase_starts = {
+                        "pdf_extract": 0.0,
+                        "ollama_embed": 0.10,
+                        "qdrant_upsert": 0.80,
+                    }
+
+                def on_progress(phase, current, total, elapsed_sec):
+                    if total <= 0:
+                        return
+                    label = phase_labels.get(phase, phase)
+                    pct_in_phase = current / total
+                    overall = phase_starts.get(phase, 0.0) + phase_weights.get(phase, 0.0) * pct_in_phase
+                    progress_bar.progress(min(overall, 1.0), text=f"{label}  ({current}/{total})  {elapsed_sec:.1f}s")
+                    status_text.caption(f"{label}: {current}/{total} — {elapsed_sec:.1f} saniye")
+
+                if use_smart_index:
+                    result = index_pdfs_smart(
+                        [str(p) for p in pdf_paths],
+                        base_collection=index_collection_name,
+                        parent_size=int(smart_parent_size),
+                        child_size=int(smart_child_size),
+                        child_overlap=int(smart_child_overlap),
+                        boundary_llm_model=smart_boundary_model,
+                        qdrant_url=qdrant_url,
+                        embed_model=embed_model_name,
+                        progress_callback=on_progress,
+                    )
+                else:
+                    result = index_pdfs(
+                        [str(p) for p in pdf_paths],
+                        collection_name=index_collection_name,
+                        chunk_size=int(chunk_size),
+                        chunk_overlap=int(chunk_overlap),
+                        qdrant_url=qdrant_url,
+                        embed_model=embed_model_name,
+                        progress_callback=on_progress,
+                    )
+
+                progress_bar.progress(1.0, text="Tamamlandı!")
+                status_text.empty()
+
+                if use_smart_index:
+                    st.success(
+                        "Smart indeksleme tamamlandı! "
+                        f"Toplam **{result['total_parents']}** parent ve **{result['total_children']}** child yazıldı."
+                    )
+                    st.markdown("#### Süre Detayları")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("PDF Okuma", f"{result['pdf_extract_sec']}s")
+                    col2.metric("LLM Boundary", f"{result['llm_boundary_sec']}s")
+                    col3.metric("Parent Store", f"{result['parent_store_sec']}s")
+                    col4, col5, col6 = st.columns(3)
+                    col4.metric("Child Embed", f"{result['child_embed_sec']}s")
+                    col5.metric("Child Upsert", f"{result['child_upsert_sec']}s")
+                    col6.metric("Toplam", f"{result['total_sec']}s")
+                    if result.get("timeout_count"):
+                        st.warning(f"LLM boundary aşamasında {result['timeout_count']} blok timeout aldı.")
+                    st.write("Koleksiyonlar:", f"{index_collection_name}_parents", "/", f"{index_collection_name}_children")
+                else:
+                    st.success(f"İndeksleme tamamlandı! Toplam **{result['total_chunks']}** chunk indekslendi.")
+                    st.markdown("#### Süre Detayları")
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("PDF Okuma", f"{result['pdf_extract_sec']}s")
+                    col2.metric("Ollama Embed", f"{result['ollama_embed_sec']}s")
+                    col3.metric("Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
+                    col4.metric("Toplam", f"{result['total_sec']}s")
+                    st.write("Koleksiyon:", index_collection_name)
+            except Exception as exc:
+                st.error(f"İndeksleme sırasında hata oluştu: {exc}")
+
+
+def _render_chat_tab(
+    connection_error: str | None,
+    all_models: List[str],
+    filtered_count: int,
+    shared_embed_models: List[str],
+    collection_name: str,
+    openai_api_key: str,
+) -> None:
+    if connection_error:
+        st.error(connection_error)
+    _render_qa_model_selector(all_models, filtered_count, key_prefix="chat")
+    chat_qa_models_selected = st.session_state.get("chat_qa_models_selected", [])
+
+    with st.container(border=True):
+        col_eval, col_embed, col_mode = st.columns([3, 2, 2])
+
+        with col_eval:
+            chat_eval_enabled, chat_eval_backend, chat_eval_model_name, chat_local_eval_model_name = _render_eval_settings(all_models, key_prefix="chat")
+
+        with col_embed:
+            retrieval_selection = _render_collection_selection(
+                shared_embed_models=shared_embed_models,
+                collection_name=collection_name,
+                key_prefix="chat",
+                embed_label="Embedding modeli",
+                rag_type_label="Retrieval tipi",
+                rag_type_help="Smart parent/child koleksiyonlarını, BM25 ise anahtar kelime aramasını kullanır.",
+                rag_type_horizontal=False,
+                classic_label="Klasik koleksiyon",
+                smart_label="Smart koleksiyon",
+                classic_help="İndekslemede kullandığınız koleksiyonu seçin.",
+                smart_help="_children/_parents çifti bu base isimden türetilir.",
+                classic_caption_prefix="Koleksiyon",
+                smart_caption_prefix="Koleksiyonlar",
+            )
+            chat_embed_model = retrieval_selection.embed_model
+            chat_collection_name = retrieval_selection.collection_name
+            chat_smart_rag = retrieval_selection.smart_rag
+            chat_retrieval_mode = retrieval_selection.retrieval_mode
+
+        with col_mode:
+            chat_rag_mode_label = st.radio(
+                "Cevaplama modu",
+                options=["RAG'li", "RAG'siz", "İkisi birden"],
+                horizontal=False,
+                key="chat_rag_mode",
+            )
+            if chat_rag_mode_label != "RAG'siz":
+                k_chat = st.number_input(
+                    "Context chunk sayısı (k)",
+                    min_value=1,
+                    max_value=20,
+                    value=5,
+                    key="chat_k",
+                )
             else:
-                try:
-                    progress_bar = st.progress(0, text="Hazırlanıyor...")
-                    status_text = st.empty()
+                k_chat = 5
+            if chat_rag_mode_label != "RAG'siz" and chat_retrieval_mode == "vector":
+                chat_score_threshold = st.slider(
+                    "Score threshold",
+                    min_value=0.10,
+                    max_value=1.0,
+                    value=0.55,
+                    step=0.05,
+                    key="chat_score_threshold",
+                    help="Düşük değer daha fazla ama daha zayıf eşleşme döndürür.",
+                )
+            else:
+                chat_score_threshold = 0.55
+            chat_thinking_enabled = st.toggle(
+                "Thinking modu",
+                value=False,
+                key="chat_thinking_enabled",
+                help=(
+                    "Reasoning modellerinde (Qwen3, QwQ vb.) thinking modunu açar. "
+                    "Kapalıyken <think> blokları cevaba karışmaz. "
+                    "Diğer modeller bu seçeneği zaten görmezden gelir."
+                ),
+            )
 
-                    if use_smart_index:
-                        phase_labels = {
-                            "pdf_extract": "PDF'ler okunuyor",
-                            "llm_boundary": "LLM semantik sınırlar belirleniyor",
-                            "parent_store": "Parent bloklar Qdrant'a yazılıyor",
-                            "child_embed": "Child embedding hesaplanıyor",
-                            "child_upsert": "Child chunk'lar Qdrant'a yazılıyor",
-                        }
-                        phase_weights = {
-                            "pdf_extract": 0.08,
-                            "llm_boundary": 0.42,
-                            "parent_store": 0.10,
-                            "child_embed": 0.25,
-                            "child_upsert": 0.15,
-                        }
-                        phase_starts = {
-                            "pdf_extract": 0.0,
-                            "llm_boundary": 0.08,
-                            "parent_store": 0.50,
-                            "child_embed": 0.60,
-                            "child_upsert": 0.85,
-                        }
-                    else:
-                        phase_labels = {
-                            "pdf_extract": "PDF'ler okunuyor",
-                            "ollama_embed": "Ollama embedding hesaplanıyor",
-                            "qdrant_upsert": "Qdrant'a yazılıyor",
-                        }
-                        phase_weights = {
-                            "pdf_extract": 0.10,
-                            "ollama_embed": 0.70,
-                            "qdrant_upsert": 0.20,
-                        }
-                        phase_starts = {
-                            "pdf_extract": 0.0,
-                            "ollama_embed": 0.10,
-                            "qdrant_upsert": 0.80,
-                        }
+    chat_rag_mode_map = {"RAG'li": "rag", "RAG'siz": "no_rag", "İkisi birden": "both"}
+    chat_rag_mode = chat_rag_mode_map[chat_rag_mode_label]
 
-                    def on_progress(phase, current, total, elapsed_sec):
-                        if total <= 0:
-                            return
-                        label = phase_labels.get(phase, phase)
-                        pct_in_phase = current / total
-                        overall = phase_starts.get(phase, 0.0) + phase_weights.get(phase, 0.0) * pct_in_phase
-                        progress_bar.progress(min(overall, 1.0), text=f"{label}  ({current}/{total})  {elapsed_sec:.1f}s")
-                        status_text.caption(f"{label}: {current}/{total} — {elapsed_sec:.1f} saniye")
+    if "chat_eval_rows" not in st.session_state:
+        st.session_state["chat_eval_rows"] = []
 
-                    if use_smart_index:
-                        result = index_pdfs_smart(
-                            [str(p) for p in pdf_paths],
-                            base_collection=index_collection_name,
-                            parent_size=int(smart_parent_size),
-                            child_size=int(smart_child_size),
-                            child_overlap=int(smart_child_overlap),
-                            boundary_llm_model=smart_boundary_model,
-                            qdrant_url=qdrant_url,
-                            embed_model=embed_model_name,
-                            progress_callback=on_progress,
-                        )
-                    else:
-                        result = index_pdfs(
-                            [str(p) for p in pdf_paths],
-                            collection_name=index_collection_name,
-                            chunk_size=int(chunk_size),
-                            chunk_overlap=int(chunk_overlap),
-                            qdrant_url=qdrant_url,
-                            embed_model=embed_model_name,
-                            progress_callback=on_progress,
-                        )
-
-                    progress_bar.progress(1.0, text="Tamamlandı!")
-                    status_text.empty()
-
-                    if use_smart_index:
-                        st.success(
-                            "Smart indeksleme tamamlandı! "
-                            f"Toplam **{result['total_parents']}** parent ve **{result['total_children']}** child yazıldı."
-                        )
-                        st.markdown("#### Süre Detayları")
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("PDF Okuma", f"{result['pdf_extract_sec']}s")
-                        col2.metric("LLM Boundary", f"{result['llm_boundary_sec']}s")
-                        col3.metric("Parent Store", f"{result['parent_store_sec']}s")
-                        col4, col5, col6 = st.columns(3)
-                        col4.metric("Child Embed", f"{result['child_embed_sec']}s")
-                        col5.metric("Child Upsert", f"{result['child_upsert_sec']}s")
-                        col6.metric("Toplam", f"{result['total_sec']}s")
-                        if result.get("timeout_count"):
-                            st.warning(f"LLM boundary aşamasında {result['timeout_count']} blok timeout aldı.")
-                        st.write("Koleksiyonlar:", f"{index_collection_name}_parents", "/", f"{index_collection_name}_children")
-                    else:
-                        st.success(f"İndeksleme tamamlandı! Toplam **{result['total_chunks']}** chunk indekslendi.")
-                        st.markdown("#### Süre Detayları")
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("PDF Okuma", f"{result['pdf_extract_sec']}s")
-                        col2.metric("Ollama Embed", f"{result['ollama_embed_sec']}s")
-                        col3.metric("Qdrant Yazma", f"{result['qdrant_upsert_sec']}s")
-                        col4.metric("Toplam", f"{result['total_sec']}s")
-                        st.write("Koleksiyon:", index_collection_name)
-                except Exception as exc:
-                    st.error(f"İndeksleme sırasında hata oluştu: {exc}")
-
-    # =========================================================================
-    # TAB 2: CSV Değerlendirme
-    # =========================================================================
-    with tab_eval:
-        _render_csv_eval_tab(
-            connection_error=connection_error,
-            all_models=all_models,
-            filtered_count=filtered_count,
-            shared_embed_models=shared_embed_models,
-            collection_name=collection_name,
+    col_q, col_ref = st.columns(2)
+    with col_q:
+        question = st.text_area(
+            "Soru",
+            placeholder="Buraya modelden cevap almak istediğin soruyu yaz...",
+            height=150,
+        )
+    with col_ref:
+        expected_answer = st.text_area(
+            "Beklenen / referans cevap (isteğe bağlı)",
+            placeholder="Eval sırasında kıyaslamak için doğru cevabı yazabilirsin.",
+            height=150,
         )
 
-    # =========================================================================
-    # TAB 3: Manuel Chat Eval
-    # =========================================================================
-    with tab_chat:
-        # --- Model seçici ---
-        if connection_error:
-            st.error(connection_error)
-        _render_qa_model_selector(all_models, filtered_count, key_prefix="chat")
-        chat_qa_models_selected = st.session_state.get("chat_qa_models_selected", [])
-
-        # --- Kompakt ayarlar satırı ---
-        with st.container(border=True):
-            col_eval, col_embed, col_mode = st.columns([3, 2, 2])
-
-            with col_eval:
-                chat_eval_enabled, chat_eval_backend, chat_eval_model_name, chat_local_eval_model_name = _render_eval_settings(all_models, key_prefix="chat")
-
-            with col_embed:
-                if shared_embed_models:
-                    chat_embed_model = st.selectbox(
-                        "Embedding modeli",
-                        options=shared_embed_models,
-                        key="chat_embed_model",
-                    )
-                    chat_collections, chat_coll_err = _list_qdrant_collections()
-                    if chat_coll_err:
-                        st.warning(chat_coll_err)
-                        chat_collections = []
-                    classic_cols, smart_cols = _collection_options_for_embed(chat_collections, chat_embed_model)
-                    chat_rag_type = st.radio(
-                        "Retrieval tipi",
-                        options=["Klasik", "Smart", "BM25 Klasik", "BM25 Smart"],
-                        horizontal=False,
-                        key="chat_rag_type",
-                        help="Smart parent/child koleksiyonlarını, BM25 ise anahtar kelime aramasını kullanır.",
-                    )
-                    chat_smart_rag = chat_rag_type in ("Smart", "BM25 Smart")
-                    chat_retrieval_mode = "bm25" if chat_rag_type.startswith("BM25") else "vector"
-                    if chat_smart_rag:
-                        if smart_cols:
-                            chat_collection_name = st.selectbox(
-                                "Smart koleksiyon",
-                                options=smart_cols,
-                                key="chat_smart_col_select",
-                            )
-                            st.caption(f"Koleksiyonlar: `{chat_collection_name}_children` / `{chat_collection_name}_parents`")
-                        else:
-                            chat_collection_name = ""
-                            st.warning(f"'{chat_embed_model}' modeli için smart koleksiyon bulunamadı.")
-                    else:
-                        if classic_cols:
-                            chat_collection_name = st.selectbox(
-                                "Klasik koleksiyon",
-                                options=classic_cols,
-                                key="chat_classic_col_select",
-                            )
-                            st.caption(f"Koleksiyon: `{chat_collection_name}`")
-                        else:
-                            chat_collection_name = ""
-                            st.warning(f"'{chat_embed_model}' modeli için klasik koleksiyon bulunamadı.")
-                else:
-                    chat_embed_model = None
-                    chat_collection_name = collection_name
-                    chat_smart_rag = False
-                    chat_retrieval_mode = "vector"
-
-            with col_mode:
-                chat_rag_mode_label = st.radio(
-                    "Cevaplama modu",
-                    options=["RAG'li", "RAG'siz", "İkisi birden"],
-                    horizontal=False,
-                    key="chat_rag_mode",
-                )
-                if chat_rag_mode_label != "RAG'siz":
-                    k_chat = st.number_input(
-                        "Context chunk sayısı (k)",
-                        min_value=1,
-                        max_value=20,
-                        value=5,
-                        key="chat_k",
-                    )
-                else:
-                    k_chat = 5
-                if chat_rag_mode_label != "RAG'siz" and chat_retrieval_mode == "vector":
-                    chat_score_threshold = st.slider(
-                        "Score threshold",
-                        min_value=0.10,
-                        max_value=1.0,
-                        value=0.55,
-                        step=0.05,
-                        key="chat_score_threshold",
-                        help="Düşük değer daha fazla ama daha zayıf eşleşme döndürür.",
-                    )
-                else:
-                    chat_score_threshold = 0.55
-                chat_thinking_enabled = st.toggle(
-                    "Thinking modu",
-                    value=False,
-                    key="chat_thinking_enabled",
-                    help=(
-                        "Reasoning modellerinde (Qwen3, QwQ vb.) thinking modunu açar. "
-                        "Kapalıyken <think> blokları cevaba karışmaz. "
-                        "Diğer modeller bu seçeneği zaten görmezden gelir."
-                    ),
-                )
-
-        chat_rag_mode_map = {"RAG'li": "rag", "RAG'siz": "no_rag", "İkisi birden": "both"}
-        chat_rag_mode = chat_rag_mode_map[chat_rag_mode_label]
-
-        # --- Soru alanı ---
-        if "chat_eval_rows" not in st.session_state:
-            st.session_state["chat_eval_rows"] = []
-
-        col_q, col_ref = st.columns(2)
-        with col_q:
-            question = st.text_area(
-                "Soru",
-                placeholder="Buraya modelden cevap almak istediğin soruyu yaz...",
-                height=150,
-            )
-        with col_ref:
-            expected_answer = st.text_area(
-                "Beklenen / referans cevap (isteğe bağlı)",
-                placeholder="Eval sırasında kıyaslamak için doğru cevabı yazabilirsin.",
-                height=150,
+    if st.button("Soruyu değerlendir", type="primary", use_container_width=True):
+        if not question.strip():
+            st.error("Lütfen bir soru gir.")
+        elif chat_rag_mode != "no_rag" and not chat_collection_name:
+            st.error("Seçili retrieval tipi için geçerli bir koleksiyon bulunamadı.")
+        else:
+            _run_chat_eval(
+                question=question,
+                expected_answer=expected_answer,
+                rag_mode=chat_rag_mode,
+                k=k_chat,
+                qa_models_selected=chat_qa_models_selected,
+                all_models=all_models,
+                eval_enabled=chat_eval_enabled,
+                eval_backend=chat_eval_backend,
+                eval_model_name=chat_eval_model_name,
+                local_eval_model_name=chat_local_eval_model_name,
+                openai_api_key=openai_api_key,
+                collection_name=chat_collection_name,
+                embed_model=chat_embed_model,
+                think=chat_thinking_enabled,
+                smart_rag=chat_smart_rag,
+                score_threshold=float(chat_score_threshold),
+                retrieval_mode=chat_retrieval_mode,
             )
 
-        if st.button("Soruyu değerlendir", type="primary", use_container_width=True):
-            if not question.strip():
-                st.error("Lütfen bir soru gir.")
-            elif chat_rag_mode != "no_rag" and not chat_collection_name:
-                st.error("Seçili retrieval tipi için geçerli bir koleksiyon bulunamadı.")
-            else:
-                _run_chat_eval(
-                    question=question,
-                    expected_answer=expected_answer,
-                    rag_mode=chat_rag_mode,
-                    k=k_chat,
-                    qa_models_selected=chat_qa_models_selected,
-                    all_models=all_models,
-                    eval_enabled=chat_eval_enabled,
-                    eval_backend=chat_eval_backend,
-                    eval_model_name=chat_eval_model_name,
-                    local_eval_model_name=chat_local_eval_model_name,
-                    openai_api_key=openai_api_key,
-                    collection_name=chat_collection_name,
-                    embed_model=chat_embed_model,
-                    think=chat_thinking_enabled,
-                    smart_rag=chat_smart_rag,
-                    score_threshold=float(chat_score_threshold),
-                    retrieval_mode=chat_retrieval_mode,
-                )
+    if st.session_state.get("chat_eval_rows"):
+        csv_buffer = io.StringIO()
+        fieldnames = list(st.session_state["chat_eval_rows"][0].keys())
+        writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in st.session_state["chat_eval_rows"]:
+            writer.writerow(row)
 
-        # Manuel chat logunu CSV olarak indirme
-        if st.session_state.get("chat_eval_rows"):
-            csv_buffer = io.StringIO()
-            fieldnames = list(st.session_state["chat_eval_rows"][0].keys())
-            writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in st.session_state["chat_eval_rows"]:
-                writer.writerow(row)
+        st.download_button(
+            label="Manuel chat sonuçlarını CSV olarak indir",
+            data=csv_buffer.getvalue().encode("utf-8"),
+            file_name="chat_results.csv",
+            mime="text/csv",
+        )
 
-            st.download_button(
-                label="Manuel chat sonuçlarını CSV olarak indir",
-                data=csv_buffer.getvalue().encode("utf-8"),
-                file_name="chat_results.csv",
-                mime="text/csv",
-            )
 
-    # ── 4th Tab: Sesli Değerlendirme ( Voice ) ──────────────────────────
-    with tab_voice:
+def _render_voice_tab() -> None:
         st.subheader("Sesli Sentezleme (Sadece TTS)")
         st.write("Bu bölümde yazdığınız veya CSV ile yüklediğiniz metinler doğrudan uzak sunucudaki model ile sese dönüştürülür. LLM veya RAG kullanılmaz.")
 
@@ -1661,10 +1585,9 @@ def main() -> None:
                     mime="audio/wav",
                     key="voice_manuel_dl",
                 )
-    # =========================================================================
-    # TAB 6: Yönetim (Model ve Koleksiyon Silme)
-    # =========================================================================
-    with tab_manage:
+
+
+def _render_manage_tab() -> None:
         st.subheader("Yönetim")
 
         col_ollama_mgmt, col_qdrant_mgmt = st.columns(2)
@@ -1796,10 +1719,7 @@ def main() -> None:
                             st.rerun()
 
 
-    # =========================================================================
-    # TAB 7: Sonuç Analizi
-    # =========================================================================
-    with tab_analysis:
+def _render_analysis_tab() -> None:
         import pandas as pd
 
         st.subheader("Sonuç Analizi")
@@ -1952,6 +1872,96 @@ def main() -> None:
                 st.dataframe(filtered_df[display_cols + remaining].reset_index(drop=True), use_container_width=True)
         else:
             st.info("Analiz etmek istediğiniz export CSV dosyasını yükleyin.")
+
+
+def main() -> None:
+    st.set_page_config(page_title="RAG Değerlendirme Pipeline", layout="wide")
+
+    st.markdown(
+        """
+        <style>
+        div[data-baseweb="popover"] ul {
+            background-color: #1e1e1e;
+        }
+        div[data-baseweb="popover"] li {
+            color: #fafafa;
+        }
+        div[data-baseweb="popover"] li:hover {
+            background-color: #333333;
+        }
+        div[data-baseweb="popover"] li[aria-selected="true"] {
+            background-color: #404040;
+        }
+        div[data-baseweb="select"] > div {
+            border-color: #555555;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.title("RAG + Değerlendirme Pipeline")
+    st.write(
+        "PDF tabanlı Türkçe RAG sistemi: "
+        "PDF'leri Qdrant'a indeksle (Ollama embedding ile), CSV'den soruları değerlendir, "
+        "cevapları Ollama ile üret ve değerlendir."
+    )
+
+    _render_sidebar_monitor()
+
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+    collection_name = os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME)
+
+    _render_connection_status(qdrant_url)
+
+    ollama_models, connection_error, _filter_elapsed, filtered_count = _list_ollama_models()
+    all_models = [] if connection_error else sorted({m for m in ollama_models if m})
+
+    shared_embed_models, shared_embed_err = _list_embedding_models()
+    if shared_embed_err or not shared_embed_models:
+        _embed_msg = shared_embed_err or "Sunucuda hiç embedding modeli bulunamadı."
+        st.error(f"Embedding modelleri yüklenemedi: {_embed_msg} Ollama bağlantısını kontrol et.")
+
+    tab_index, tab_eval, tab_chat, tab_voice, tab_manage, tab_analysis = st.tabs(
+        ["PDF İndeksleme", "CSV Değerlendirme", "Manuel Chat Eval", "Sesli Değerlendirme", "Yönetim", "Sonuç Analizi"]
+    )
+
+    with tab_index:
+        _render_index_tab(
+            all_models=all_models,
+            shared_embed_models=shared_embed_models,
+            collection_name=collection_name,
+            qdrant_url=qdrant_url,
+        )
+
+    with tab_eval:
+        _render_csv_eval_tab(
+            connection_error=connection_error,
+            all_models=all_models,
+            filtered_count=filtered_count,
+            shared_embed_models=shared_embed_models,
+            collection_name=collection_name,
+        )
+
+    with tab_chat:
+        _render_chat_tab(
+            connection_error=connection_error,
+            all_models=all_models,
+            filtered_count=filtered_count,
+            shared_embed_models=shared_embed_models,
+            collection_name=collection_name,
+            openai_api_key=openai_api_key,
+        )
+
+    with tab_voice:
+        _render_voice_tab()
+
+    with tab_manage:
+        _render_manage_tab()
+
+    with tab_analysis:
+        _render_analysis_tab()
 
 
 if __name__ == "__main__":
