@@ -52,13 +52,16 @@ def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, dat
 # Qdrant bağlantısı
 # ---------------------------------------------------------------------------
 _qdrant_client: Optional[QdrantClient] = None
+_qdrant_client_url: Optional[str] = None
 
 
 def get_qdrant_client(url: str = QDRANT_URL) -> QdrantClient:
     """Lazy-init Qdrant bağlantısı."""
-    global _qdrant_client
-    if _qdrant_client is None:
-        _qdrant_client = QdrantClient(url=url)
+    global _qdrant_client, _qdrant_client_url
+    normalized_url = (url or QDRANT_URL).rstrip("/")
+    if _qdrant_client is None or _qdrant_client_url != normalized_url:
+        _qdrant_client = QdrantClient(url=normalized_url)
+        _qdrant_client_url = normalized_url
     return _qdrant_client
 
 

@@ -25,6 +25,20 @@ EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-5.4-mini")
 _CSV_ENCODINGS = ["utf-8-sig", "utf-8", "cp1254", "cp1252", "latin-1"]
 
 
+def _resolve_ollama_base_url(base_url: str | None = None) -> str:
+    """Resolve Ollama base URL, tolerating legacy OLLAMA_HOST configuration."""
+    resolved = (base_url or "").strip()
+    if not resolved:
+        resolved = os.getenv("OLLAMA_BASE_URL", "").strip()
+    if not resolved:
+        resolved = os.getenv("OLLAMA_HOST", "").strip()
+    if not resolved:
+        return ""
+    if not resolved.startswith("http"):
+        resolved = f"http://{resolved}"
+    return resolved.rstrip("/")
+
+
 def load_questions(
     csv_path: str,
     question_col: str = "question",
@@ -100,11 +114,12 @@ def warmup_model(
     Ollama'ya modeli RAM'e yüklemesi için boş bir istek gönderir.
     Bu çağrı response_time ölçümüne dahil edilmez.
     """
-    if not base_url:
+    api_base = _resolve_ollama_base_url(base_url)
+    if not api_base:
         return
     try:
         requests.post(
-            f"{base_url.rstrip('/')}/api/generate",
+            f"{api_base}/api/generate",
             json={"model": model, "keep_alive": "5m"},
             timeout=timeout,
         )
@@ -120,11 +135,12 @@ def unload_model(
     """
     keep_alive=0 göndererek modeli Ollama'nın VRAM/RAM'inden boşaltır.
     """
-    if not base_url:
+    api_base = _resolve_ollama_base_url(base_url)
+    if not api_base:
         return
     try:
         requests.post(
-            f"{base_url.rstrip('/')}/api/generate",
+            f"{api_base}/api/generate",
             json={"model": model, "keep_alive": 0},
             timeout=timeout,
         )
@@ -133,12 +149,14 @@ def unload_model(
 
 
 def _require_ollama_base_url(base_url: str) -> str:
-    if not base_url:
+    resolved = _resolve_ollama_base_url(base_url)
+    if not resolved:
         raise ValueError(
-            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
-            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
+            "OLLAMA_BASE_URL veya OLLAMA_HOST ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin "
+            "(örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
         )
-    return base_url.rstrip("/")
+    return resolved
 
 
 def _collect_ollama_chat_response(
