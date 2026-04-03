@@ -1,0 +1,2 @@
+﻿# Streamlit arayüzü, RAG (rag_index, pipeline) ve BM25 için bağımlılıklar
+-r ui_files/requirements-ui.txt

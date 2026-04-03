@@ -14,6 +14,9 @@ from rag_index import (
     QDRANT_URL,
     get_qdrant_client,
     retrieve_chunks,
+    retrieve_chunks_smart,
+    retrieve_chunks_bm25,
+    retrieve_chunks_bm25_smart,
 )
 
 
@@ -37,6 +40,38 @@ def load_questions(
         for idx, row in enumerate(reader):
             question = (row.get(question_col) or "").strip()
             observation = (row.get(answer_col) or "").strip()
+EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "gpt-4.1-mini")
+
+_CSV_ENCODINGS = ["utf-8-sig", "utf-8", "cp1254", "cp1252", "latin-1"]
+
+
+def _open_csv_safe(path: str):
+    """UTF-8 → cp1254 → latin-1 sırasıyla dener; Türkçe karakterleri doğru okur."""
+    for enc in _CSV_ENCODINGS:
+        try:
+            f = open(path, newline="", encoding=enc)
+            f.read()
+            f.seek(0)
+            return f
+        except (UnicodeDecodeError, UnicodeError):
+            try:
+                f.close()
+            except Exception:
+                pass
+    return open(path, newline="", encoding="utf-8", errors="replace")
+
+
+def load_questions(csv_path: str) -> List[Dict]:
+    """
+    Load questions and optional observation_idea (Answers) from a CSV.
+    Assumes headers: Questions, Answers (like sample_rag_input.csv).
+    """
+    items: List[Dict] = []
+    with _open_csv_safe(csv_path) as f:
+        reader = csv.DictReader(f)
+        for idx, row in enumerate(reader):
+            question = (row.get("Questions") or "").strip()
+            observation = (row.get("Answers") or "").strip()
             if not question:
                 continue
             items.append(
@@ -55,21 +90,22 @@ def _build_rag_prompt(question: str, context: str) -> str:
     """
     if not context.strip():
         return (
-            "Aşağıdaki soruyu cevaplamaya çalışıyorsun, ancak sana hiçbir bağlam verilmiyor.\n"
-            "Cevabı bilmiyorsan 'BİLMİYORUM' de ve uydurma.\n\n"
-            f"Soru: {question}\n"
+            "You are trying to answer the following question, but no context is provided.\n"
+            "If you do not know the answer, say 'I DON'T KNOW' and do not make anything up.\n\n"
+            f"Question: {question}\n"
         )
 
     return (
-        "Sana verilen metni bağlam olarak kullanarak soruyu cevapla.\n"
-        "Kurallar:\n"
-        "- Sadece aşağıdaki bağlamdaki bilgilere dayan.\n"
-        "- Bağlamda olmayan bilgileri uydurma.\n"
-        "- Eğer bağlam soruyu cevaplamak için yeterli değilse kısaca 'BİLMİYORUM' de.\n\n"
-        f"Soru:\n{question}\n\n"
-        f"Bağlam:\n{context}\n\n"
-        "Cevabın:\n"
+        "Answer the question using only the provided context.\n"
+        "Rules:\n"
+        "- Base your answer solely on the context below.\n"
+        "- Do not fabricate information that is not in the context.\n"
+        "- If the context is insufficient to answer the question, say 'I DON'T KNOW'.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Context:\n{context}\n\n"
+        "Answer:\n"
     )
+
 
 def warmup_model(
     model: str = QA_OLLAMA_MODEL,
@@ -188,18 +224,71 @@ def generate_rag_answer_ollama(
     Returns a dict with:
       - answer: str
       - response_time_seconds: float
-
-    think: Reasoning modeli için thinking modunu aç/kapat (varsayılan kapalı).
-           Kapalıyken trace temizlenir, eval sonuçları temiz kalır.
     """
     prompt = _build_rag_prompt(question, context)
-    return _collect_ollama_chat_response(
-        prompt=prompt,
-        model=model,
-        base_url=base_url,
+    if not base_url:
+        raise ValueError(
+            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
+        )
+    t0 = time.time()
+
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/chat",
+        json={
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "stream": False,
+        },
         timeout=timeout,
-        think=think,
     )
+    dt = time.time() - t0
+    resp.raise_for_status()
+    data = resp.json()
+
+    answer = ""
+    # Typical Ollama /api/chat response: {"message": {"role": "assistant", "content": "..."}}
+    if isinstance(data, dict):
+        message = data.get("message") or {}
+        if isinstance(message, dict):
+            answer = str(message.get("content") or "")
+        elif "choices" in data:
+            # Fallback if future API resembles OpenAI style
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                answer = str(msg.get("content") or "")
+
+    answer = answer.replace("\r\n", "\n").strip()
+
+    # Optional token-level statistics from Ollama
+    eval_count = None
+    eval_duration_seconds = None
+    tokens_per_second = None
+    if isinstance(data, dict):
+        raw_eval_count = data.get("eval_count")
+        raw_eval_duration = data.get("eval_duration")
+        if isinstance(raw_eval_count, (int, float)) and isinstance(
+            raw_eval_duration, (int, float)
+        ):
+            eval_count = int(raw_eval_count)
+            # Ollama durations are in nanoseconds
+            eval_duration_seconds = float(raw_eval_duration) / 1e9
+            if eval_duration_seconds > 0:
+                tokens_per_second = eval_count / eval_duration_seconds
+
+    return {
+        "answer": answer,
+        "response_time_seconds": dt,
+        "eval_count": eval_count,
+        "eval_duration_seconds": eval_duration_seconds,
+        "tokens_per_second": tokens_per_second,
+    }
 
 
 def _build_no_rag_prompt(question: str) -> str:
@@ -228,17 +317,68 @@ def generate_no_rag_answer_ollama(
     Returns a dict with:
       - answer: str
       - response_time_seconds: float
-
-    think: Reasoning modeli için thinking modunu aç/kapat (varsayılan kapalı).
     """
     prompt = _build_no_rag_prompt(question)
-    return _collect_ollama_chat_response(
-        prompt=prompt,
-        model=model,
-        base_url=base_url,
+    if not base_url:
+        raise ValueError(
+            "OLLAMA_BASE_URL ortam değişkeni tanımlı değil. "
+            "Lütfen .env dosyasına uzak sunucu adresini ekleyin (örn: OLLAMA_BASE_URL=http://192.168.1.151:11434)."
+        )
+    t0 = time.time()
+
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/chat",
+        json={
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "stream": False,
+        },
         timeout=timeout,
-        think=think,
     )
+    dt = time.time() - t0
+    resp.raise_for_status()
+    data = resp.json()
+
+    answer = ""
+    if isinstance(data, dict):
+        message = data.get("message") or {}
+        if isinstance(message, dict):
+            answer = str(message.get("content") or "")
+        elif "choices" in data:
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                answer = str(msg.get("content") or "")
+
+    answer = answer.replace("\r\n", "\n").strip()
+
+    # Optional token-level statistics from Ollama
+    eval_count = None
+    eval_duration_seconds = None
+    tokens_per_second = None
+    if isinstance(data, dict):
+        raw_eval_count = data.get("eval_count")
+        raw_eval_duration = data.get("eval_duration")
+        if isinstance(raw_eval_count, (int, float)) and isinstance(
+            raw_eval_duration, (int, float)
+        ):
+            eval_count = int(raw_eval_count)
+            eval_duration_seconds = float(raw_eval_duration) / 1e9
+            if eval_duration_seconds > 0:
+                tokens_per_second = eval_count / eval_duration_seconds
+
+    return {
+        "answer": answer,
+        "response_time_seconds": dt,
+        "eval_count": eval_count,
+        "eval_duration_seconds": eval_duration_seconds,
+        "tokens_per_second": tokens_per_second,
+    }
 
 
 def get_openai_client(api_key: Optional[str] = None) -> OpenAI:
@@ -471,8 +611,11 @@ def run_full_pipeline(
     eval_enabled: bool = True,
     question_col: str = "question",
     answer_col: str = "answer",
-    embed_model: Optional[str] = None,
     think: bool = False,
+    smart_chunking: bool = False,
+    score_threshold: float = 0.55,
+    retrieval_mode: str = "vector",
+    embed_model: str = "",
 ) -> List[Dict]:
     """
     High-level helper:
@@ -484,6 +627,10 @@ def run_full_pipeline(
     rag_mode: "rag" | "no_rag" | "both"
     """
     questions = load_questions(csv_path, question_col=question_col, answer_col=answer_col)
+    smart_chunking: True ise child chunk eşleşmesi → parent bağlam ile çalışır.
+    retrieval_mode: "vector" | "bm25"
+    """
+    questions = load_questions(csv_path)
     if not questions:
         return []
 
@@ -503,13 +650,39 @@ def run_full_pipeline(
 
         # --- RAG'li ---
         if rag_mode in ("rag", "both"):
-            chunks = retrieve_chunks(
-                question=question,
-                collection_name=collection_name,
-                k=k,
-                qdrant_url=qdrant_url,
-                embed_model=embed_model,
-            )
+            if retrieval_mode == "bm25":
+                if smart_chunking:
+                    chunks = retrieve_chunks_bm25_smart(
+                        question=question,
+                        base_collection=collection_name,
+                        k=k,
+                        qdrant_url=qdrant_url,
+                    )
+                else:
+                    chunks = retrieve_chunks_bm25(
+                        question=question,
+                        collection_name=collection_name,
+                        k=k,
+                        qdrant_url=qdrant_url,
+                    )
+            elif smart_chunking:
+                chunks = retrieve_chunks_smart(
+                    question=question,
+                    base_collection=collection_name,
+                    k=k,
+                    qdrant_url=qdrant_url,
+                    score_threshold=score_threshold,
+                    embed_model=embed_model or None,
+                )
+            else:
+                chunks = retrieve_chunks(
+                    question=question,
+                    collection_name=collection_name,
+                    k=k,
+                    qdrant_url=qdrant_url,
+                    score_threshold=score_threshold,
+                    embed_model=embed_model or None,
+                )
             context = "\n\n".join(c["text"] for c in chunks)
             rag_result = generate_rag_answer_ollama(
                 question=question,
