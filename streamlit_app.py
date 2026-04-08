@@ -632,9 +632,10 @@ def _render_qa_model_selector(all_models: List[str], filtered_count: int, key_pr
         grid_cols = st.columns(3)
         for i, model_name in enumerate(filtered_models):
             with grid_cols[i % 3]:
+                if f"{key_prefix}_qa_model_select_{model_name}" not in st.session_state:
+                    st.session_state[f"{key_prefix}_qa_model_select_{model_name}"] = False
                 st.checkbox(
                     model_name,
-                    value=st.session_state.get(f"{key_prefix}_qa_model_select_{model_name}", False),
                     key=f"{key_prefix}_qa_model_select_{model_name}",
                     help="Bu modeli RAG değerlendirmesine dahil et.",
                 )
@@ -1436,8 +1437,11 @@ def _render_chat_tab(
 
     if st.session_state.get("chat_eval_rows"):
         csv_buffer = io.StringIO()
-        fieldnames = list(st.session_state["chat_eval_rows"][0].keys())
-        writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
+        all_keys: dict = {}
+        for row in st.session_state["chat_eval_rows"]:
+            all_keys.update(row)
+        fieldnames = list(all_keys.keys())
+        writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in st.session_state["chat_eval_rows"]:
             writer.writerow(row)
@@ -1721,6 +1725,36 @@ def _render_manage_tab() -> None:
 
 def _render_analysis_tab() -> None:
         import pandas as pd
+        import plotly.graph_objects as go
+
+        def _grouped_bar(pivot_df: "pd.DataFrame", title: str, y_label: str, color_map: dict | None = None) -> "go.Figure":
+            """Render a grouped bar chart from a pivot table (index=Model, columns=RAG type)."""
+            fig = go.Figure()
+            default_colors = ["#1f77b4", "#17becf", "#aec7e8", "#9edae5"]
+            for i, col in enumerate(pivot_df.columns):
+                color = (color_map or {}).get(col, default_colors[i % len(default_colors)])
+                fig.add_trace(go.Bar(
+                    name=str(col),
+                    x=pivot_df.index.tolist(),
+                    y=pivot_df[col].tolist(),
+                    marker_color=color,
+                    text=[f"{v:.1f}" if pd.notna(v) else "" for v in pivot_df[col]],
+                    textposition="outside",
+                ))
+            fig.update_layout(
+                barmode="group",
+                title=title,
+                yaxis_title=y_label,
+                xaxis_title="Model",
+                legend_title="RAG Tipi",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#fafafa"),
+                xaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
+                margin=dict(t=60, b=40),
+            )
+            return fig
 
         st.subheader("Sonuç Analizi")
         st.caption("Daha önce export edilen CSV dosyasını yükleyerek sonuçları analiz edin.")
@@ -1740,104 +1774,297 @@ def _render_analysis_tab() -> None:
 
             if df is not None:
                 # Kolon varlık kontrolü
-                required_cols = {"model", "ai_score", "ai_verdict", "ai_hallucination_risk", "rag_type", "tokens_per_second"}
+                required_cols = {"model", "rag_type", "ai_score", "ai_verdict", "ai_hallucination_risk", "tokens_per_second"}
                 missing = required_cols - set(df.columns)
                 if missing:
                     st.warning(f"CSV'de eksik kolonlar: {', '.join(sorted(missing))}. Bazı metrikler hesaplanamayabilir.")
 
-                if "ai_score" in df.columns:
-                    df["ai_score"] = pd.to_numeric(df["ai_score"], errors="coerce")
-                else:
-                    df["ai_score"] = pd.Series(float("nan"), index=df.index)
+                # Numeric dönüşümler
+                for col in ("ai_score", "tokens_per_second", "response_time_seconds", "eval_duration_seconds", "retrieved_chunk_size"):
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-                if "tokens_per_second" in df.columns:
-                    df["tokens_per_second"] = pd.to_numeric(df["tokens_per_second"], errors="coerce")
-                else:
-                    df["tokens_per_second"] = pd.Series(float("nan"), index=df.index)
+                # rag_type etiketlerini normalize et (RAG'li / RAG'siz tespiti)
+                rag_vals = df["rag_type"].dropna().unique().tolist() if "rag_type" in df.columns else []
+                rag_label = next((v for v in rag_vals if "siz" not in str(v).lower()), None)
+                no_rag_label = next((v for v in rag_vals if "siz" in str(v).lower()), None)
+
+                def _pct(part: float, total: float) -> float:
+                    return round(part / total * 100, 1) if total > 0 else 0.0
+
+                def _group_metrics(grp: "pd.DataFrame") -> dict:
+                    total = len(grp)
+                    out = {"Satır": total}
+                    if "ai_score" in grp.columns:
+                        out["Ort. Skor"] = round(grp["ai_score"].mean(), 2)
+                    if "ai_verdict" in grp.columns:
+                        vc = grp["ai_verdict"].value_counts()
+                        out["Correct %"] = _pct(vc.get("correct", 0), total)
+                        out["Partial %"] = _pct(vc.get("partial", 0), total)
+                        out["Incorrect %"] = _pct(vc.get("incorrect", 0), total)
+                    if "ai_hallucination_risk" in grp.columns:
+                        hc = grp["ai_hallucination_risk"].value_counts()
+                        out["Halüsinasyon High %"] = _pct(hc.get("high", 0), total)
+                    if "tokens_per_second" in grp.columns:
+                        out["Ort. TPS"] = round(grp["tokens_per_second"].mean(), 1)
+                    if "response_time_seconds" in grp.columns:
+                        out["Ort. Yanıt (sn)"] = round(grp["response_time_seconds"].mean(), 2)
+                    return out
 
                 st.markdown("---")
 
-                # ── Model Karşılaştırma Tablosu ───────────────────────────────
-                st.markdown("### Model Karşılaştırma")
+                # ── 1) Global Özet KPI'ları ───────────────────────────────────
+                st.markdown("### Genel Özet")
+                st.caption(f"Toplam {len(df)} değerlendirme satırı analiz ediliyor.")
 
-                if "model" in df.columns:
-                    rows_model = []
+                if rag_label and no_rag_label:
+                    rag_df = df[df["rag_type"] == rag_label]
+                    no_rag_df = df[df["rag_type"] == no_rag_label]
+
+                    kpi_cols = st.columns(4)
+                    if "ai_score" in df.columns:
+                        rag_mean = rag_df["ai_score"].mean()
+                        no_rag_mean = no_rag_df["ai_score"].mean()
+                        delta = (rag_mean - no_rag_mean) if pd.notna(rag_mean) and pd.notna(no_rag_mean) else None
+                        kpi_cols[0].metric(
+                            "Ort. Skor (RAG'li)",
+                            f"{rag_mean:.2f}" if pd.notna(rag_mean) else "—",
+                            delta=f"{delta:+.2f} vs RAG'siz" if delta is not None else None,
+                        )
+                        kpi_cols[1].metric(
+                            "Ort. Skor (RAG'siz)",
+                            f"{no_rag_mean:.2f}" if pd.notna(no_rag_mean) else "—",
+                        )
+                    if "ai_verdict" in df.columns:
+                        rag_correct = _pct((rag_df["ai_verdict"] == "correct").sum(), len(rag_df))
+                        no_rag_correct = _pct((no_rag_df["ai_verdict"] == "correct").sum(), len(no_rag_df))
+                        kpi_cols[2].metric(
+                            "Correct % (RAG'li)",
+                            f"{rag_correct}%",
+                            delta=f"{rag_correct - no_rag_correct:+.1f} vs RAG'siz",
+                        )
+                    if "ai_hallucination_risk" in df.columns:
+                        rag_halluc = _pct((rag_df["ai_hallucination_risk"] == "high").sum(), len(rag_df))
+                        no_rag_halluc = _pct((no_rag_df["ai_hallucination_risk"] == "high").sum(), len(no_rag_df))
+                        kpi_cols[3].metric(
+                            "Halüsinasyon High % (RAG'li)",
+                            f"{rag_halluc}%",
+                            delta=f"{rag_halluc - no_rag_halluc:+.1f} vs RAG'siz",
+                            delta_color="inverse",
+                        )
+
+                    kpi_cols2 = st.columns(2)
+                    if "tokens_per_second" in df.columns:
+                        kpi_cols2[0].metric("Ort. TPS (RAG'li)", f"{rag_df['tokens_per_second'].mean():.1f}")
+                        kpi_cols2[1].metric("Ort. TPS (RAG'siz)", f"{no_rag_df['tokens_per_second'].mean():.1f}")
+                else:
+                    st.info("RAG'li / RAG'siz ayrımı tespit edilemedi — özet KPI'lar atlanıyor.")
+
+                st.markdown("---")
+
+                # ── 2) Model × RAG Tipi Kırılımı ──────────────────────────────
+                st.markdown("### Model × RAG Tipi Kırılımı")
+
+                if "model" in df.columns and "rag_type" in df.columns:
+                    rows_breakdown = []
+                    for (model_name, rag_name), grp in df.groupby(["model", "rag_type"]):
+                        row = {"Model": model_name, "RAG": rag_name}
+                        row.update(_group_metrics(grp))
+                        rows_breakdown.append(row)
+
+                    breakdown_df = pd.DataFrame(rows_breakdown)
+                    breakdown_df = breakdown_df.sort_values(["Model", "RAG"]).reset_index(drop=True)
+                    st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+
+                    # Bar chart: Ort. Skor — Model × RAG
+                    if "Ort. Skor" in breakdown_df.columns:
+                        pivot_score = breakdown_df.pivot(index="Model", columns="RAG", values="Ort. Skor")
+                        st.plotly_chart(
+                            _grouped_bar(pivot_score, "Ort. AI Skoru — Model × RAG", "Ort. Skor (0–10)"),
+                            use_container_width=True,
+                        )
+
+                    # Bar chart: Correct %
+                    if "Correct %" in breakdown_df.columns:
+                        pivot_correct = breakdown_df.pivot(index="Model", columns="RAG", values="Correct %")
+                        st.plotly_chart(
+                            _grouped_bar(pivot_correct, "Correct % — Model × RAG", "Correct %"),
+                            use_container_width=True,
+                        )
+
+                    # Bar chart: TPS
+                    if "Ort. TPS" in breakdown_df.columns:
+                        pivot_tps = breakdown_df.pivot(index="Model", columns="RAG", values="Ort. TPS")
+                        st.plotly_chart(
+                            _grouped_bar(pivot_tps, "Ort. Token/sn — Model × RAG", "Token / sn"),
+                            use_container_width=True,
+                        )
+                else:
+                    st.info("'model' ve 'rag_type' kolonları gerekli.")
+
+                st.markdown("---")
+
+                # ── 3) RAG Lift (RAG − RAG'siz, model başına) ────────────────
+                st.markdown("### RAG Lift (RAG'li − RAG'siz)")
+                st.caption("Pozitif değerler RAG'in iyileştirdiği, negatif değerler ise kötüleştirdiği metrikleri gösterir.")
+
+                if rag_label and no_rag_label and "model" in df.columns:
+                    lift_rows = []
                     for model_name, grp in df.groupby("model"):
-                        total = len(grp)
-                        row = {"Model": model_name, "Toplam Satır": total}
+                        rag_grp = grp[grp["rag_type"] == rag_label]
+                        no_rag_grp = grp[grp["rag_type"] == no_rag_label]
+                        if len(rag_grp) == 0 or len(no_rag_grp) == 0:
+                            continue
+
+                        lift_row = {"Model": model_name}
 
                         if "ai_score" in df.columns:
-                            row["Ort. AI Skoru"] = round(grp["ai_score"].mean(), 2)
+                            rm = rag_grp["ai_score"].mean()
+                            nm = no_rag_grp["ai_score"].mean()
+                            lift_row["Skor Lift"] = round(rm - nm, 2) if pd.notna(rm) and pd.notna(nm) else None
 
                         if "ai_verdict" in df.columns:
-                            vc = grp["ai_verdict"].value_counts()
-                            row["Correct %"] = round(vc.get("correct", 0) / total * 100, 1)
-                            row["Partial %"] = round(vc.get("partial", 0) / total * 100, 1)
-                            row["Incorrect %"] = round(vc.get("incorrect", 0) / total * 100, 1)
+                            rc = _pct((rag_grp["ai_verdict"] == "correct").sum(), len(rag_grp))
+                            nc = _pct((no_rag_grp["ai_verdict"] == "correct").sum(), len(no_rag_grp))
+                            lift_row["Correct % Lift"] = round(rc - nc, 1)
 
                         if "ai_hallucination_risk" in df.columns:
-                            hc = grp["ai_hallucination_risk"].value_counts()
-                            row["Hallucination High %"] = round(hc.get("high", 0) / total * 100, 1)
+                            rh = _pct((rag_grp["ai_hallucination_risk"] == "high").sum(), len(rag_grp))
+                            nh = _pct((no_rag_grp["ai_hallucination_risk"] == "high").sum(), len(no_rag_grp))
+                            lift_row["Halüsinasyon Azalması (pp)"] = round(nh - rh, 1)
 
                         if "tokens_per_second" in df.columns:
-                            row["Ort. Token/sn"] = round(grp["tokens_per_second"].mean(), 1)
+                            rt = rag_grp["tokens_per_second"].mean()
+                            nt = no_rag_grp["tokens_per_second"].mean()
+                            lift_row["TPS Farkı"] = round(rt - nt, 1) if pd.notna(rt) and pd.notna(nt) else None
 
-                        rows_model.append(row)
-
-                    st.dataframe(pd.DataFrame(rows_model).set_index("Model"), use_container_width=True)
-                else:
-                    st.info("'model' kolonu bulunamadı.")
-
-                st.markdown("---")
-
-                # ── RAG Lift Tablosu ──────────────────────────────────────────
-                st.markdown("### RAG Lift (RAG vs RAG'siz)")
-
-                if "model" in df.columns and "rag_type" in df.columns and "ai_score" in df.columns:
-                    rag_vals = df["rag_type"].unique().tolist()
-                    rag_label = next((v for v in rag_vals if "siz" not in v.lower()), None)
-                    no_rag_label = next((v for v in rag_vals if "siz" in v.lower()), None)
-
-                    if rag_label and no_rag_label:
-                        lift_rows = []
-                        for model_name, grp in df.groupby("model"):
-                            rag_grp = grp[grp["rag_type"] == rag_label]
-                            no_rag_grp = grp[grp["rag_type"] == no_rag_label]
-
-                            rag_mean = rag_grp["ai_score"].mean()
-                            no_rag_mean = no_rag_grp["ai_score"].mean()
-                            lift = round(rag_mean - no_rag_mean, 2) if pd.notna(rag_mean) and pd.notna(no_rag_mean) else None
-
-                            # Soru bazında RAG'in hurt ettiği satırlar
-                            if "question" in df.columns:
-                                merged = rag_grp[["question", "ai_score"]].rename(columns={"ai_score": "rag_score"}).merge(
-                                    no_rag_grp[["question", "ai_score"]].rename(columns={"ai_score": "no_rag_score"}),
-                                    on="question",
-                                    how="inner",
+                        # RAG'in hurt ettiği sorular
+                        if "question" in df.columns and "ai_score" in df.columns:
+                            merged = rag_grp[["question", "ai_score"]].rename(columns={"ai_score": "rag_score"}).merge(
+                                no_rag_grp[["question", "ai_score"]].rename(columns={"ai_score": "no_rag_score"}),
+                                on="question",
+                                how="inner",
+                            )
+                            if len(merged) > 0:
+                                lift_row["RAG'in Kötüleştirdiği %"] = _pct(
+                                    (merged["no_rag_score"] > merged["rag_score"]).sum(),
+                                    len(merged),
                                 )
-                                hurt_pct = round(
-                                    (merged["no_rag_score"] > merged["rag_score"]).sum() / len(merged) * 100, 1
-                                ) if len(merged) > 0 else None
-                            else:
-                                hurt_pct = None
 
-                            lift_rows.append({
-                                "Model": model_name,
-                                f"Ort. Skor ({rag_label})": round(rag_mean, 2) if pd.notna(rag_mean) else None,
-                                f"Ort. Skor ({no_rag_label})": round(no_rag_mean, 2) if pd.notna(no_rag_mean) else None,
-                                "RAG Lift (RAG − RAG'siz)": lift,
-                                "RAG'in Hurt Ettiği Soru %": hurt_pct,
-                            })
+                        lift_rows.append(lift_row)
 
-                        st.dataframe(pd.DataFrame(lift_rows).set_index("Model"), use_container_width=True)
+                    if lift_rows:
+                        lift_df = pd.DataFrame(lift_rows)
+                        st.dataframe(lift_df, use_container_width=True, hide_index=True)
+
+                        if "Skor Lift" in lift_df.columns:
+                            lift_pivot = lift_df.set_index("Model")[["Skor Lift"]]
+                            colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in lift_pivot["Skor Lift"]]
+                            fig_lift = go.Figure(go.Bar(
+                                x=lift_pivot.index.tolist(),
+                                y=lift_pivot["Skor Lift"].tolist(),
+                                marker_color=colors,
+                                text=[f"{v:+.2f}" if pd.notna(v) else "" for v in lift_pivot["Skor Lift"]],
+                                textposition="outside",
+                            ))
+                            fig_lift.update_layout(
+                                title="Skor Lift — Model başına (RAG'li − RAG'siz)",
+                                yaxis_title="Lift",
+                                xaxis_title="Model",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                font=dict(color="#fafafa"),
+                                xaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
+                                yaxis=dict(gridcolor="rgba(255,255,255,0.1)", zeroline=True, zerolinecolor="rgba(255,255,255,0.4)"),
+                                showlegend=False,
+                                margin=dict(t=60, b=40),
+                            )
+                            st.plotly_chart(fig_lift, use_container_width=True)
                     else:
-                        st.info(f"RAG türleri tespit edilemedi. Bulunan değerler: {rag_vals}")
+                        st.info("Hiçbir model için hem RAG'li hem RAG'siz satır bulunamadı.")
                 else:
-                    st.info("RAG lift için 'model', 'rag_type' ve 'ai_score' kolonları gerekli.")
+                    st.info("RAG lift için 'model' kolonu ve hem RAG'li hem RAG'siz satırları gerekli.")
 
                 st.markdown("---")
 
-                # ── Soru Bazlı Detay Tablosu ─────────────────────────────────
+                # ── 4) Skor Dağılımı (Histogram) ──────────────────────────────
+                st.markdown("### Skor Dağılımı")
+                st.caption("AI skorlarının dağılımı — RAG'li ve RAG'siz yan yana.")
+
+                if "ai_score" in df.columns and rag_label and no_rag_label:
+                    # 0-10 aralığında bin'le
+                    bins = list(range(0, 12))  # 0,1,...,11
+                    labels = [f"{i}" for i in range(0, 11)]
+                    dist_rows = []
+                    for rag_name in [rag_label, no_rag_label]:
+                        sub = df[df["rag_type"] == rag_name]["ai_score"].dropna()
+                        if len(sub) == 0:
+                            continue
+                        binned = pd.cut(sub, bins=bins, labels=labels, include_lowest=True, right=False)
+                        counts = binned.value_counts().reindex(labels, fill_value=0)
+                        for score_bin, cnt in counts.items():
+                            dist_rows.append({"Skor": score_bin, "RAG": rag_name, "Adet": int(cnt)})
+
+                    if dist_rows:
+                        dist_df = pd.DataFrame(dist_rows)
+                        pivot_dist = dist_df.pivot(index="Skor", columns="RAG", values="Adet").fillna(0)
+                        st.plotly_chart(
+                            _grouped_bar(pivot_dist, "Skor Dağılımı — RAG'li vs RAG'siz", "Soru Sayısı"),
+                            use_container_width=True,
+                        )
+                else:
+                    st.info("Skor dağılımı için 'ai_score' kolonu ve RAG'li/RAG'siz ayrımı gerekli.")
+
+                st.markdown("---")
+
+                # ── 5) Problemli Sorular ─────────────────────────────────────
+                st.markdown("### Problemli Sorular")
+                st.caption("RAG'in kötüleştirdiği veya her iki modun da düşük skor aldığı sorular (debug için).")
+
+                if (
+                    rag_label
+                    and no_rag_label
+                    and "ai_score" in df.columns
+                    and "question" in df.columns
+                    and "model" in df.columns
+                ):
+                    problem_mode = st.radio(
+                        "Filtre",
+                        options=[
+                            "RAG'siz > RAG'li (RAG kötüleştirmiş)",
+                            "Her ikisi de ≤ 5 (ikisi de başarısız)",
+                        ],
+                        horizontal=True,
+                        key="analysis_problem_mode",
+                    )
+
+                    rag_view = df[df["rag_type"] == rag_label][["model", "question", "ai_score", "model_answer"]].rename(
+                        columns={"ai_score": "rag_score", "model_answer": "rag_answer"}
+                    )
+                    no_rag_view = df[df["rag_type"] == no_rag_label][["model", "question", "ai_score", "model_answer"]].rename(
+                        columns={"ai_score": "no_rag_score", "model_answer": "no_rag_answer"}
+                    )
+                    merged_all = rag_view.merge(no_rag_view, on=["model", "question"], how="inner")
+
+                    if problem_mode.startswith("RAG'siz"):
+                        problems = merged_all[merged_all["no_rag_score"] > merged_all["rag_score"]]
+                    else:
+                        problems = merged_all[(merged_all["rag_score"] <= 5) & (merged_all["no_rag_score"] <= 5)]
+
+                    problems = problems.sort_values(["model", "rag_score"]).reset_index(drop=True)
+                    st.caption(f"{len(problems)} problem satırı bulundu.")
+                    if len(problems) > 0:
+                        st.dataframe(
+                            problems[["model", "question", "rag_score", "no_rag_score", "rag_answer", "no_rag_answer"]],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                else:
+                    st.info("Problemli sorular için 'model', 'question', 'ai_score' ve RAG'li/RAG'siz ayrımı gerekli.")
+
+                st.markdown("---")
+
+                # ── 6) Soru Bazlı Detay Tablosu ──────────────────────────────
                 st.markdown("### Soru Bazlı Detay")
 
                 filter_cols = st.columns(3)
@@ -1865,8 +2092,8 @@ def _render_analysis_tab() -> None:
 
                 display_cols = [c for c in [
                     "model", "question", "rag_type", "ai_verdict", "ai_score",
-                    "ai_hallucination_risk", "tokens_per_second", "eval_duration_seconds",
-                    "model_answer", "answer",
+                    "ai_hallucination_risk", "tokens_per_second", "response_time_seconds",
+                    "eval_duration_seconds", "model_answer", "answer",
                 ] if c in filtered_df.columns]
                 remaining = [c for c in filtered_df.columns if c not in display_cols]
                 st.dataframe(filtered_df[display_cols + remaining].reset_index(drop=True), use_container_width=True)
