@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import MenuItem from '@mui/material/MenuItem'
@@ -37,6 +38,17 @@ export function VoiceEvalPage() {
   const [duration, setDuration] = useState<number | null>(null)
 
   const [bulkFiles, setBulkFiles] = useState<{ text: string; url: string; dur: number }[]>([])
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const [bulkErrors, setBulkErrors] = useState<string[]>([])
+  const [bulkSummary, setBulkSummary] = useState<{ success: number; failed: number } | null>(null)
+
+  const formatError = (err: unknown) => {
+    const maybeAxios = err as {
+      response?: { data?: { detail?: string } }
+      message?: string
+    }
+    return maybeAxios?.response?.data?.detail || maybeAxios?.message || 'Bilinmeyen hata'
+  }
 
   const synthesize = async (text: string) => {
     const res = await api.post(
@@ -64,22 +76,46 @@ export function VoiceEvalPage() {
   const onManual = async () => {
     const q = manualText.trim()
     if (!q) return
-    const { blob, dur } = await synthesize(q)
-    if (audioUrl) URL.revokeObjectURL(audioUrl)
-    setAudioUrl(URL.createObjectURL(blob))
-    setDuration(dur)
+    try {
+      setVoiceError(null)
+      const { blob, dur } = await synthesize(q)
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+      setAudioUrl(URL.createObjectURL(blob))
+      setDuration(dur)
+    } catch (err) {
+      setVoiceError(`Ses üretimi başarısız: ${formatError(err)}`)
+    }
   }
 
   const onBulk = async (file: File) => {
-    const text = await file.text()
-    const lines = text.split(/\r?\n/).map((l) => l.split(',')[0]?.trim()).filter(Boolean)
-    const out: { text: string; url: string; dur: number }[] = []
-    for (const line of lines) {
-      const { blob, dur } = await synthesize(line)
-      out.push({ text: line, url: URL.createObjectURL(blob), dur })
+    try {
+      setVoiceError(null)
+      setBulkErrors([])
+      setBulkSummary(null)
+      const text = await file.text()
+      const lines = text
+        .split(/\r?\n/)
+        .map((l) => l.split(',')[0]?.trim())
+        .filter(Boolean)
+      const out: { text: string; url: string; dur: number }[] = []
+      const errors: string[] = []
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]
+        if (!line) continue
+        try {
+          const { blob, dur } = await synthesize(line)
+          out.push({ text: line, url: URL.createObjectURL(blob), dur })
+        } catch (err) {
+          errors.push(`Satır ${i + 1} atlandı: ${formatError(err)}`)
+        }
+      }
+      bulkFiles.forEach((b) => URL.revokeObjectURL(b.url))
+      setBulkFiles(out)
+      setBulkErrors(errors)
+      setBulkSummary({ success: out.length, failed: errors.length })
+    } catch (err) {
+      setVoiceError(`Toplu CSV işlenemedi: ${formatError(err)}`)
     }
-    bulkFiles.forEach((b) => URL.revokeObjectURL(b.url))
-    setBulkFiles(out)
   }
 
   return (
@@ -88,6 +124,11 @@ export function VoiceEvalPage() {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         Bu bölümde metinler uzak sunucudaki TTS modele dönüştürülür. LLM/RAG kullanılmaz.
       </Typography>
+      {voiceError && (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          {voiceError}
+        </Alert>
+      )}
 
       <TextField
         select
@@ -160,6 +201,16 @@ export function VoiceEvalPage() {
           }}
         />
       </Button>
+      {bulkSummary && (
+        <Alert severity={bulkSummary.failed > 0 ? 'warning' : 'success'} sx={{ mb: 2 }}>
+          Toplu dönüşüm tamamlandı: {bulkSummary.success} başarılı, {bulkSummary.failed} başarısız.
+        </Alert>
+      )}
+      {bulkErrors.map((err, idx) => (
+        <Alert key={`${err}-${idx}`} severity="warning" sx={{ mb: 1 }}>
+          {err}
+        </Alert>
+      ))}
 
       {bulkFiles.map((b, i) => (
         <Box key={i} sx={{ mb: 2 }}>

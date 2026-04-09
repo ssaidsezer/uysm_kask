@@ -68,7 +68,11 @@ export function QaModelPicker(props: {
         sx={{ mb: 1 }}
       />
       <Box sx={{ mb: 1 }}>
-        <Button size="small" onClick={() => props.onChange([...filtered])} sx={{ mr: 1 }}>
+        <Button
+          size="small"
+          onClick={() => props.onChange([...new Set([...props.selected, ...filtered])])}
+          sx={{ mr: 1 }}
+        >
           Hepsini seç
         </Button>
         <Button

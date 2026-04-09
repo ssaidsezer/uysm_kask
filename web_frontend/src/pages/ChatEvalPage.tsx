@@ -71,6 +71,7 @@ export function ChatEvalPage() {
   const [question, setQuestion] = useState('')
   const [expected, setExpected] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
+  const [formError, setFormError] = useState<string | null>(null)
 
   const [resp, setResp] = useState<any>(null)
 
@@ -302,10 +303,28 @@ export function ChatEvalPage() {
         variant="contained"
         fullWidth
         disabled={evalMut.isPending}
-        onClick={() => evalMut.mutate()}
+        onClick={() => {
+          const q = question.trim()
+          if (!q) {
+            setFormError('Lütfen bir soru gir.')
+            return
+          }
+          if (ragModeApi !== 'no_rag' && !collectionName.trim()) {
+            setFormError('Seçili retrieval tipi için geçerli bir koleksiyon bulunamadı.')
+            return
+          }
+          setFormError(null)
+          evalMut.mutate()
+        }}
       >
         Soruyu değerlendir
       </Button>
+
+      {formError && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {formError}
+        </Alert>
+      )}
 
       {resp?.errors?.length > 0 &&
         resp.errors.map((e: string, i: number) => (
