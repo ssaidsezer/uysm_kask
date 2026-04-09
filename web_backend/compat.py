@@ -13,6 +13,14 @@ from rag_index import DEFAULT_COLLECTION_NAME, QDRANT_URL
 
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent
 
+OLLAMA_ENV_MISSING_MSG = (
+    "OLLAMA_BASE_URL veya OLLAMA_HOST ortam değişkeni tanımlı değil."
+)
+
+
+def _qdrant_base_url() -> str:
+    return os.environ.get("QDRANT_URL", QDRANT_URL)
+
 
 def get_ollama_base_url() -> str:
     base_url = os.environ.get("OLLAMA_BASE_URL", "").strip()
@@ -147,7 +155,7 @@ def list_ollama_models() -> tuple[List[str], str, float, int]:
 def list_embedding_models() -> tuple[List[str], str]:
     host = get_ollama_base_url()
     if not host:
-        return [], "OLLAMA_BASE_URL veya OLLAMA_HOST ortam değişkeni tanımlı değil."
+        return [], OLLAMA_ENV_MISSING_MSG
 
     url = host + "/api/tags"
     try:
@@ -176,10 +184,13 @@ def ensure_tmp_dir() -> Path:
 def pull_ollama_model(model_name: str) -> tuple[bool, str]:
     host = get_ollama_base_url()
     if not host:
-        return False, "OLLAMA_BASE_URL veya OLLAMA_HOST ortam değişkeni tanımlı değil."
-    url = host + "/api/pull"
+        return False, OLLAMA_ENV_MISSING_MSG
     try:
-        resp = requests.post(url, json={"name": model_name, "stream": False}, timeout=300)
+        resp = requests.post(
+            host + "/api/pull",
+            json={"name": model_name, "stream": False},
+            timeout=300,
+        )
         resp.raise_for_status()
         return True, f"'{model_name}' başarıyla pull edildi."
     except Exception as e:
@@ -189,10 +200,9 @@ def pull_ollama_model(model_name: str) -> tuple[bool, str]:
 def delete_ollama_model(model_name: str) -> tuple[bool, str]:
     host = get_ollama_base_url()
     if not host:
-        return False, "OLLAMA_BASE_URL veya OLLAMA_HOST ortam değişkeni tanımlı değil."
-    url = host + "/api/delete"
+        return False, OLLAMA_ENV_MISSING_MSG
     try:
-        resp = requests.delete(url, json={"name": model_name}, timeout=30)
+        resp = requests.delete(host + "/api/delete", json={"name": model_name}, timeout=30)
         resp.raise_for_status()
         return True, f"'{model_name}' başarıyla silindi."
     except Exception as e:
@@ -200,7 +210,7 @@ def delete_ollama_model(model_name: str) -> tuple[bool, str]:
 
 
 def list_qdrant_collections() -> tuple[List[str], str]:
-    qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+    qdrant_url = _qdrant_base_url()
     try:
         resp = requests.get(f"{qdrant_url}/collections", timeout=10)
         resp.raise_for_status()
@@ -212,7 +222,7 @@ def list_qdrant_collections() -> tuple[List[str], str]:
 
 
 def delete_qdrant_collection(collection_name: str) -> tuple[bool, str]:
-    qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+    qdrant_url = _qdrant_base_url()
     try:
         resp = requests.delete(f"{qdrant_url}/collections/{collection_name}", timeout=30)
         resp.raise_for_status()

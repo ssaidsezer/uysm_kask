@@ -27,6 +27,131 @@ from .model_profiles_store import resolve_eval_profile, resolve_qa_for_model
 from .schemas import ChatEvalRequest, ChatEvalResponse, ChatModelResult, ChunkCard
 
 
+def _rag_answer_record(qa_model_name: str, req: ChatEvalRequest, rag_result: dict) -> dict:
+    return {
+        "model": f"{qa_model_name} (RAG)" if req.rag_mode == "both" else qa_model_name,
+        "question_index": 0,
+        "question": req.question,
+        "observation_idea": req.expected_answer or "",
+        "model_answer": rag_result.get("answer", ""),
+        "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
+    }
+
+
+def _no_rag_answer_record(qa_model_name: str, req: ChatEvalRequest, no_rag_result: dict) -> dict:
+    return {
+        "model": f"{qa_model_name} (RAG'siz)" if req.rag_mode == "both" else qa_model_name,
+        "question_index": 0,
+        "question": req.question,
+        "observation_idea": req.expected_answer or "",
+        "model_answer": no_rag_result.get("answer", ""),
+        "response_time_seconds": no_rag_result.get("response_time_seconds", 0.0),
+    }
+
+
+def _evaluate_record(
+    req: ChatEvalRequest,
+    record: dict,
+    openai_client,
+    eval_model: str,
+    eval_sys,
+    eval_oopts,
+    eval_think_prof,
+    eval_openai_extras,
+) -> dict:
+    if req.eval_enabled:
+        return evaluate_answer_any(
+            record=record,
+            eval_model=eval_model,
+            client=openai_client,
+            backend="openai" if req.eval_backend == "OpenAI" else "ollama",
+            local_model=req.local_eval_model_name,
+            eval_system_prompt=eval_sys,
+            eval_ollama_options=eval_oopts or None,
+            eval_think=eval_think_prof,
+            eval_openai_extras=eval_openai_extras or None,
+        )
+    return {}
+
+
+def _try_rag_answer_pipeline(
+    *,
+    req: ChatEvalRequest,
+    qa_model_name: str,
+    qa_sys,
+    qa_opts,
+    qa_think: bool,
+    context: str,
+    openai_client,
+    eval_model: str,
+    eval_sys,
+    eval_oopts,
+    eval_think_prof,
+    eval_openai_extras,
+) -> tuple[dict | None, dict | None, dict | None, str | None]:
+    try:
+        rag_result = generate_rag_answer_ollama(
+            question=req.question,
+            context=context,
+            model=qa_model_name,
+            system_prompt=qa_sys,
+            ollama_options=qa_opts or None,
+            think=qa_think,
+        )
+        rag_record = _rag_answer_record(qa_model_name, req, rag_result)
+        rag_eval = _evaluate_record(
+            req,
+            rag_record,
+            openai_client,
+            eval_model,
+            eval_sys,
+            eval_oopts,
+            eval_think_prof,
+            eval_openai_extras,
+        )
+        return rag_record, rag_result, rag_eval, None
+    except Exception as exc:
+        return None, None, None, f"RAG'li çağrıda hata: {exc}"
+
+
+def _try_no_rag_answer_pipeline(
+    *,
+    req: ChatEvalRequest,
+    qa_model_name: str,
+    qa_sys,
+    qa_opts,
+    qa_think: bool,
+    openai_client,
+    eval_model: str,
+    eval_sys,
+    eval_oopts,
+    eval_think_prof,
+    eval_openai_extras,
+) -> tuple[dict | None, dict | None, dict | None, str | None]:
+    try:
+        no_rag_result = generate_no_rag_answer_ollama(
+            question=req.question,
+            model=qa_model_name,
+            system_prompt=qa_sys,
+            ollama_options=qa_opts or None,
+            think=qa_think,
+        )
+        no_rag_record = _no_rag_answer_record(qa_model_name, req, no_rag_result)
+        no_rag_eval = _evaluate_record(
+            req,
+            no_rag_record,
+            openai_client,
+            eval_model,
+            eval_sys,
+            eval_oopts,
+            eval_think_prof,
+            eval_openai_extras,
+        )
+        return no_rag_record, no_rag_result, no_rag_eval, None
+    except Exception as exc:
+        return None, None, None, f" RAG'siz çağrıda hata: {exc}"
+
+
 def _chunk_title(retrieval_mode: str, smart_rag: bool) -> str:
     if retrieval_mode == "bm25" and smart_rag:
         return (
@@ -151,76 +276,42 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
         no_rag_record = no_rag_result = no_rag_eval = None
 
         if req.rag_mode in ("rag", "both"):
-            try:
-                rag_result = generate_rag_answer_ollama(
-                    question=req.question,
-                    context=context,
-                    model=qa_model_name,
-                    system_prompt=qa_sys,
-                    ollama_options=qa_opts or None,
-                    think=qa_think,
-                )
-                rag_record = {
-                    "model": f"{qa_model_name} (RAG)" if req.rag_mode == "both" else qa_model_name,
-                    "question_index": 0,
-                    "question": req.question,
-                    "observation_idea": req.expected_answer or "",
-                    "model_answer": rag_result.get("answer", ""),
-                    "response_time_seconds": rag_result.get("response_time_seconds", 0.0),
-                }
-                if req.eval_enabled:
-                    rag_eval = evaluate_answer_any(
-                        record=rag_record,
-                        eval_model=eval_model,
-                        client=openai_client,
-                        backend="openai" if req.eval_backend == "OpenAI" else "ollama",
-                        local_model=req.local_eval_model_name,
-                        eval_system_prompt=eval_sys,
-                        eval_ollama_options=eval_oopts or None,
-                        eval_think=eval_think_prof,
-                        eval_openai_extras=eval_openai_extras or None,
-                    )
-                else:
-                    rag_eval = {}
-            except Exception as exc:
-                block.error = f"RAG'li çağrıda hata: {exc}"
+            rag_record, rag_result, rag_eval, rag_err = _try_rag_answer_pipeline(
+                req=req,
+                qa_model_name=qa_model_name,
+                qa_sys=qa_sys,
+                qa_opts=qa_opts,
+                qa_think=qa_think,
+                context=context,
+                openai_client=openai_client,
+                eval_model=eval_model,
+                eval_sys=eval_sys,
+                eval_oopts=eval_oopts,
+                eval_think_prof=eval_think_prof,
+                eval_openai_extras=eval_openai_extras,
+            )
+            if rag_err:
+                block.error = rag_err
                 model_results.append(block)
                 unload_model(qa_model_name)
                 continue
 
         if req.rag_mode in ("no_rag", "both"):
-            try:
-                no_rag_result = generate_no_rag_answer_ollama(
-                    question=req.question,
-                    model=qa_model_name,
-                    system_prompt=qa_sys,
-                    ollama_options=qa_opts or None,
-                    think=qa_think,
-                )
-                no_rag_record = {
-                    "model": f"{qa_model_name} (RAG'siz)" if req.rag_mode == "both" else qa_model_name,
-                    "question_index": 0,
-                    "question": req.question,
-                    "observation_idea": req.expected_answer or "",
-                    "model_answer": no_rag_result.get("answer", ""),
-                    "response_time_seconds": no_rag_result.get("response_time_seconds", 0.0),
-                }
-                if req.eval_enabled:
-                    no_rag_eval = evaluate_answer_any(
-                        record=no_rag_record,
-                        eval_model=eval_model,
-                        client=openai_client,
-                        backend="openai" if req.eval_backend == "OpenAI" else "ollama",
-                        local_model=req.local_eval_model_name,
-                        eval_system_prompt=eval_sys,
-                        eval_ollama_options=eval_oopts or None,
-                        eval_think=eval_think_prof,
-                        eval_openai_extras=eval_openai_extras or None,
-                    )
-                else:
-                    no_rag_eval = {}
-            except Exception as exc:
-                block.error = (block.error or "") + f" RAG'siz çağrıda hata: {exc}"
+            no_rag_record, no_rag_result, no_rag_eval, no_rag_err = _try_no_rag_answer_pipeline(
+                req=req,
+                qa_model_name=qa_model_name,
+                qa_sys=qa_sys,
+                qa_opts=qa_opts,
+                qa_think=qa_think,
+                openai_client=openai_client,
+                eval_model=eval_model,
+                eval_sys=eval_sys,
+                eval_oopts=eval_oopts,
+                eval_think_prof=eval_think_prof,
+                eval_openai_extras=eval_openai_extras,
+            )
+            if no_rag_err:
+                block.error = (block.error or "") + no_rag_err
                 model_results.append(block)
                 unload_model(qa_model_name)
                 continue

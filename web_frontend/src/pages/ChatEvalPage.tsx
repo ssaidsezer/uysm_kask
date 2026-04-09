@@ -1,32 +1,24 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Collapse from '@mui/material/Collapse'
 import CircularProgress from '@mui/material/CircularProgress'
 import Divider from '@mui/material/Divider'
-import FormControlLabel from '@mui/material/FormControlLabel'
 import Paper from '@mui/material/Paper'
-import Radio from '@mui/material/Radio'
-import RadioGroup from '@mui/material/RadioGroup'
-import Slider from '@mui/material/Slider'
 import Stack from '@mui/material/Stack'
-import Switch from '@mui/material/Switch'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api } from '../api/client'
 import { CollectionPicker } from '../components/CollectionPicker'
+import { EvalBackendSection } from '../components/eval/EvalBackendSection'
+import { EvalRagSettingsSection } from '../components/eval/EvalRagSettingsSection'
+import { EvalSavedProfilesSection } from '../components/eval/EvalSavedProfilesSection'
 import { QaModelPicker } from '../components/QaModelPicker'
-import { ragTypeToFlags, type RagTypeUi } from '../utils/collections'
-import type { ModelProfile } from './ModelProfilesPage'
-
-const RAG_MODE_UI = ["RAG'li", "RAG'siz", 'İkisi birden'] as const
-const ragModeToApi: Record<(typeof RAG_MODE_UI)[number], 'rag' | 'no_rag' | 'both'> = {
-  "RAG'li": 'rag',
-  "RAG'siz": 'no_rag',
-  'İkisi birden': 'both',
-}
+import { buildQaProfileByModel } from '../eval/evalRagMode'
+import { useEvalPageBasics } from '../hooks/useEvalPageBasics'
+import type { RagTypeUi } from '../utils/collections'
 
 function chunkTitle(retrievalMode: string, smartRag: boolean) {
   if (retrievalMode === 'bm25' && smartRag)
@@ -37,80 +29,62 @@ function chunkTitle(retrievalMode: string, smartRag: boolean) {
 }
 
 export function ChatEvalPage() {
-  const ollamaQ = useQuery({
-    queryKey: ['ollama-models'],
-    queryFn: async () => (await api.get('/api/models/ollama')).data,
-  })
-  const embedQ = useQuery({
-    queryKey: ['embed-models'],
-    queryFn: async () => (await api.get('/api/models/embeddings')).data,
-  })
-  const cfg = useQuery({
-    queryKey: ['config'],
-    queryFn: async () => (await api.get('/api/config')).data,
-  })
-  const profilesQ = useQuery({
-    queryKey: ['model-profiles'],
-    queryFn: async () => (await api.get<{ profiles: ModelProfile[] }>('/api/model-profiles')).data,
-  })
-
-  const allModels = ollamaQ.data?.models ?? []
-  const embedModels = embedQ.data?.models ?? []
-
-  const [qaSelected, setQaSelected] = useState<string[]>([])
-  const [customModels, setCustomModels] = useState<string[]>([])
-
-  const [evalEnabled, setEvalEnabled] = useState(true)
-  const [evalBackend, setEvalBackend] = useState<'OpenAI' | 'Yerel (Ollama)'>('OpenAI')
-  const [evalModelName, setEvalModelName] = useState('')
-  const [localEvalModel, setLocalEvalModel] = useState('')
-
-  const [embedModel, setEmbedModel] = useState('')
-  const [ragType, setRagType] = useState<RagTypeUi>('Klasik')
-  const [collectionName, setCollectionName] = useState('')
-
-  const [ragModeUi, setRagModeUi] = useState<(typeof RAG_MODE_UI)[number]>("RAG'li")
-  const [k, setK] = useState(5)
-  const [scoreTh, setScoreTh] = useState(0.55)
-
-  const [useSavedQaDefaults, setUseSavedQaDefaults] = useState(true)
-  const [bulkQaProfileId, setBulkQaProfileId] = useState('')
-  const [useSavedEvalDefaults, setUseSavedEvalDefaults] = useState(true)
-  const [evalProfileId, setEvalProfileId] = useState('')
-  const [thinkingEnabled, setThinkingEnabled] = useState(false)
+  const {
+    ollamaQ,
+    allModels,
+    embedModels,
+    qaSelected,
+    setQaSelected,
+    customModels,
+    setCustomModels,
+    evalEnabled,
+    setEvalEnabled,
+    evalBackend,
+    setEvalBackend,
+    evalModelName,
+    setEvalModelName,
+    localEvalModel,
+    setLocalEvalModel,
+    embedModel,
+    setEmbedModel,
+    ragType,
+    setRagType,
+    collectionName,
+    setCollectionName,
+    ragModeUi,
+    setRagModeUi,
+    k,
+    setK,
+    scoreTh,
+    setScoreTh,
+    openaiKey,
+    setOpenaiKey,
+    useSavedQaDefaults,
+    setUseSavedQaDefaults,
+    bulkQaProfileId,
+    setBulkQaProfileId,
+    useSavedEvalDefaults,
+    setUseSavedEvalDefaults,
+    evalProfileId,
+    setEvalProfileId,
+    thinkingEnabled,
+    setThinkingEnabled,
+    smartRag,
+    retrievalMode,
+    ragModeApi,
+    qaProfiles,
+    evalProfiles,
+  } = useEvalPageBasics()
 
   const [question, setQuestion] = useState('')
   const [expected, setExpected] = useState('')
-  const [openaiKey, setOpenaiKey] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
-
   const [resp, setResp] = useState<any>(null)
-
-  useEffect(() => {
-    if (cfg.data?.eval_model_name) setEvalModelName(cfg.data.eval_model_name)
-  }, [cfg.data])
-
-  useEffect(() => {
-    if (embedModels.length && !embedModel) setEmbedModel(embedModels[0])
-  }, [embedModels, embedModel])
-
-  useEffect(() => {
-    if (allModels.length && !localEvalModel) setLocalEvalModel(allModels[0])
-  }, [allModels, localEvalModel])
-
-  const { smartRag, retrievalMode } = ragTypeToFlags(ragType)
-  const ragModeApi = ragModeToApi[ragModeUi]
-
-  const qaProfiles = profilesQ.data?.profiles ?? []
-  const evalProfiles = profilesQ.data?.profiles ?? []
 
   const evalMut = useMutation({
     mutationFn: async () => {
-      const qaByModel: Record<string, string> = {}
-      if (bulkQaProfileId && qaSelected.length) {
-        for (const m of qaSelected) qaByModel[m] = bulkQaProfileId
-      }
+      const qaByModel = buildQaProfileByModel(bulkQaProfileId, qaSelected)
       const { data } = await api.post('/api/chat/eval', {
         question: question.trim(),
         expected_answer: expected,
@@ -183,80 +157,22 @@ export function ChatEvalPage() {
         onCustomModelsChange={setCustomModels}
       />
 
-      <Box
-        sx={{
-          mb: 2,
-          p: 2,
-          border: '1px solid',
-          borderColor: 'divider',
-          borderRadius: 2,
-        }}
-      >
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Kayıtlı model profilleri
-        </Typography>
-        <Stack spacing={1}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={useSavedQaDefaults}
-                onChange={(_, v) => setUseSavedQaDefaults(v)}
-              />
-            }
-            label="QA: modele göre varsayılan profili kullan"
-          />
-          <TextField
-            select
-            size="small"
-            label="Tüm seçili QA modelleri için profil (opsiyonel)"
-            value={bulkQaProfileId}
-            onChange={(e) => setBulkQaProfileId(e.target.value)}
-            slotProps={{ select: { native: true } }}
-            fullWidth
-          >
-            <option value="">— Profil seçme —</option>
-            {qaProfiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.model_name})
-              </option>
-            ))}
-          </TextField>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={thinkingEnabled}
-                onChange={(_, v) => setThinkingEnabled(v)}
-              />
-            }
-            label="Thinking (Ollama) — profil ile birleşir"
-          />
-          <FormControlLabel
-            control={
-              <Switch
-                checked={useSavedEvalDefaults}
-                onChange={(_, v) => setUseSavedEvalDefaults(v)}
-              />
-            }
-            label="Eval: modele göre varsayılan profili kullan"
-          />
-          <TextField
-            select
-            size="small"
-            label="Eval profili (opsiyonel)"
-            value={evalProfileId}
-            onChange={(e) => setEvalProfileId(e.target.value)}
-            slotProps={{ select: { native: true } }}
-            fullWidth
-          >
-            <option value="">— Profil seçme —</option>
-            {evalProfiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.model_name})
-              </option>
-            ))}
-          </TextField>
-        </Stack>
-      </Box>
+      <EvalSavedProfilesSection
+        layout="boxed"
+        qaProfiles={qaProfiles}
+        evalProfiles={evalProfiles}
+        useSavedQaDefaults={useSavedQaDefaults}
+        onUseSavedQaDefaults={setUseSavedQaDefaults}
+        bulkQaProfileId={bulkQaProfileId}
+        onBulkQaProfileId={setBulkQaProfileId}
+        thinkingEnabled={thinkingEnabled}
+        onThinkingEnabled={setThinkingEnabled}
+        thinkingLabel="Thinking (Ollama) — profil ile birleşir"
+        useSavedEvalDefaults={useSavedEvalDefaults}
+        onUseSavedEvalDefaults={setUseSavedEvalDefaults}
+        evalProfileId={evalProfileId}
+        onEvalProfileId={setEvalProfileId}
+      />
 
       <Box sx={{ mb: 2 }}>
         <Box
@@ -266,63 +182,20 @@ export function ChatEvalPage() {
             gap: 2,
           }}
         >
-          <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Değerlendirme
-            </Typography>
-            <FormControlLabel
-              control={<Switch checked={evalEnabled} onChange={(_, v) => setEvalEnabled(v)} />}
-              label="Değerlendir"
-            />
-            {evalEnabled && (
-              <Stack spacing={1} sx={{ mt: 1 }}>
-                <TextField
-                  select
-                  label="Motor"
-                  value={evalBackend}
-                  onChange={(e) =>
-                    setEvalBackend(e.target.value as 'OpenAI' | 'Yerel (Ollama)')
-                  }
-                  slotProps={{ select: { native: true } }}
-                  size="small"
-                >
-                  <option>OpenAI</option>
-                  <option>Yerel (Ollama)</option>
-                </TextField>
-                {evalBackend === 'OpenAI' ? (
-                  <>
-                    <TextField
-                      size="small"
-                      label="OpenAI model"
-                      value={evalModelName}
-                      onChange={(e) => setEvalModelName(e.target.value)}
-                    />
-                    <TextField
-                      size="small"
-                      label="OpenAI API key (opsiyonel)"
-                      value={openaiKey}
-                      onChange={(e) => setOpenaiKey(e.target.value)}
-                    />
-                  </>
-                ) : (
-                  <TextField
-                    select
-                    size="small"
-                    label="Yerel eval"
-                    value={localEvalModel}
-                    onChange={(e) => setLocalEvalModel(e.target.value)}
-                    slotProps={{ select: { native: true } }}
-                  >
-                    {allModels.map((m: string) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </TextField>
-                )}
-              </Stack>
-            )}
-          </Box>
+          <EvalBackendSection
+            variant="gridCard"
+            evalEnabled={evalEnabled}
+            onEvalEnabled={setEvalEnabled}
+            evalBackend={evalBackend}
+            onEvalBackend={setEvalBackend}
+            evalModelName={evalModelName}
+            onEvalModelName={setEvalModelName}
+            localEvalModel={localEvalModel}
+            onLocalEvalModel={setLocalEvalModel}
+            openaiKey={openaiKey}
+            onOpenaiKey={setOpenaiKey}
+            localModelOptions={allModels}
+          />
           <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>
               Embedding ve retrieval
@@ -337,49 +210,25 @@ export function ChatEvalPage() {
               smartLabel="Smart koleksiyon"
               embedModel={embedModel}
               onEmbedModel={setEmbedModel}
-              ragType={ragType}
+              ragType={ragType as RagTypeUi}
               onRagType={setRagType}
               collectionName={collectionName}
               onCollectionName={setCollectionName}
             />
           </Box>
-          <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              RAG ayarları
-            </Typography>
-            <RadioGroup
-              value={ragModeUi}
-              onChange={(_, v) => setRagModeUi(v as (typeof RAG_MODE_UI)[number])}
-            >
-              {RAG_MODE_UI.map((r) => (
-                <FormControlLabel key={r} value={r} control={<Radio />} label={r} />
-              ))}
-            </RadioGroup>
-            <Stack direction="row" spacing={2} sx={{ mt: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-              {ragModeApi !== 'no_rag' && (
-                <TextField
-                  type="number"
-                  label="k"
-                  value={k}
-                  onChange={(e) => setK(+e.target.value)}
-                  size="small"
-                  sx={{ width: 120 }}
-                />
-              )}
-            </Stack>
-            {ragModeApi !== 'no_rag' && retrievalMode === 'vector' && (
-              <Box sx={{ mt: 1 }}>
-                <Typography variant="caption">Score threshold: {scoreTh}</Typography>
-                <Slider
-                  min={0.1}
-                  max={1}
-                  step={0.05}
-                  value={scoreTh}
-                  onChange={(_, v) => setScoreTh(v as number)}
-                />
-              </Box>
-            )}
-          </Box>
+          <EvalRagSettingsSection
+            ragModeUi={ragModeUi}
+            onRagModeUi={setRagModeUi}
+            ragModeApi={ragModeApi}
+            k={k}
+            onK={setK}
+            scoreTh={scoreTh}
+            onScoreTh={setScoreTh}
+            retrievalMode={retrievalMode}
+            radioRow={false}
+            kFieldLayout="stack"
+            scoreCaption={`Score threshold: ${scoreTh}`}
+          />
         </Box>
       </Box>
 
