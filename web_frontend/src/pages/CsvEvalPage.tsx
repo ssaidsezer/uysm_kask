@@ -2,7 +2,6 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
-import Checkbox from '@mui/material/Checkbox'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import LinearProgress from '@mui/material/LinearProgress'
 import Radio from '@mui/material/Radio'
@@ -27,6 +26,8 @@ const ragModeToApi: Record<(typeof RAG_MODE_UI)[number], string> = {
   "RAG'siz": 'no_rag',
   'İkisi birden': 'both',
 }
+
+const sectionSx = { mt: 4 } as const
 
 export function CsvEvalPage() {
   const ollamaQ = useQuery({
@@ -55,7 +56,6 @@ export function CsvEvalPage() {
   const [localEvalModel, setLocalEvalModel] = useState('')
 
   const [csvFile, setCsvFile] = useState<File | null>(null)
-  const [useSample, setUseSample] = useState(false)
   const [qCol, setQCol] = useState('question')
   const [aCol, setACol] = useState('answer')
 
@@ -91,7 +91,6 @@ export function CsvEvalPage() {
     mutationFn: async () => {
       const fd = new FormData()
       if (csvFile) fd.append('csv_file', csvFile)
-      fd.append('use_sample', String(useSample))
       fd.append('eval_enabled', String(evalEnabled))
       fd.append('eval_backend', evalBackend)
       fd.append('eval_model_name', evalModelName)
@@ -130,157 +129,213 @@ export function CsvEvalPage() {
         CSV&apos;den soruları değerlendir
       </Typography>
 
-      <Typography variant="subtitle2">Değerlendirilecek QA modelleri</Typography>
-      {ollamaErr ? <Alert severity="error">{ollamaErr}</Alert> : null}
-      <QaModelPicker
-        allModels={allModels}
-        filteredEmbeddingCount={ollamaQ.data?.filtered_embedding_count ?? 0}
-        selected={qaSelected}
-        onChange={setQaSelected}
-        customModels={customModels}
-        onCustomModelsChange={setCustomModels}
-      />
-
-      <Stack direction="row" spacing={2} sx={{ mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-        <FormControlLabel
-          control={
-            <Switch checked={evalEnabled} onChange={(_, v) => setEvalEnabled(v)} />
-          }
-          label="Değerlendir"
+      <Box sx={{ mt: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Değerlendirilecek QA modelleri
+        </Typography>
+        {ollamaErr ? <Alert severity="error">{ollamaErr}</Alert> : null}
+        <QaModelPicker
+          allModels={allModels}
+          filteredEmbeddingCount={ollamaQ.data?.filtered_embedding_count ?? 0}
+          selected={qaSelected}
+          onChange={setQaSelected}
+          customModels={customModels}
+          onCustomModelsChange={setCustomModels}
         />
-        {evalEnabled && (
-          <>
-            <TextField
-              select
-              label="Değerlendirme motoru"
-              value={evalBackend}
-              onChange={(e) =>
-                setEvalBackend(e.target.value as 'OpenAI' | 'Yerel (Ollama)')
-              }
-              slotProps={{ select: { native: true } }}
-              size="small"
-            >
-              <option>OpenAI</option>
-              <option>Yerel (Ollama)</option>
-            </TextField>
-            {evalBackend === 'OpenAI' ? (
-              <TextField
-                size="small"
-                label="OpenAI model"
-                value={evalModelName}
-                onChange={(e) => setEvalModelName(e.target.value)}
-              />
-            ) : (
+      </Box>
+
+      <Box sx={sectionSx}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Değerlendirme
+        </Typography>
+        <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
+          <FormControlLabel
+            control={
+              <Switch checked={evalEnabled} onChange={(_, v) => setEvalEnabled(v)} />
+            }
+            label="Değerlendir"
+          />
+          {evalEnabled && (
+            <>
               <TextField
                 select
-                label="Yerel eval modeli"
-                value={localEvalModel}
-                onChange={(e) => setLocalEvalModel(e.target.value)}
+                label="Değerlendirme motoru"
+                value={evalBackend}
+                onChange={(e) =>
+                  setEvalBackend(e.target.value as 'OpenAI' | 'Yerel (Ollama)')
+                }
                 slotProps={{ select: { native: true } }}
                 size="small"
               >
-                {(allModels.length ? allModels : ['—']).map((m: string) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
+                <option>OpenAI</option>
+                <option>Yerel (Ollama)</option>
               </TextField>
-            )}
-          </>
-        )}
-      </Stack>
+              {evalBackend === 'OpenAI' ? (
+                <>
+                  <TextField
+                    size="small"
+                    label="OpenAI model"
+                    value={evalModelName}
+                    onChange={(e) => setEvalModelName(e.target.value)}
+                  />
+                  <TextField
+                    size="small"
+                    label="OpenAI API key (opsiyonel)"
+                    value={openaiKey}
+                    onChange={(e) => setOpenaiKey(e.target.value)}
+                    sx={{ minWidth: 280 }}
+                  />
+                </>
+              ) : (
+                <TextField
+                  select
+                  label="Yerel eval modeli"
+                  value={localEvalModel}
+                  onChange={(e) => setLocalEvalModel(e.target.value)}
+                  slotProps={{ select: { native: true } }}
+                  size="small"
+                >
+                  {(allModels.length ? allModels : ['—']).map((m: string) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </TextField>
+              )}
+            </>
+          )}
+        </Stack>
+      </Box>
 
-      <Button variant="outlined" component="label" sx={{ mr: 1 }}>
-        CSV yükle
-        <input
-          type="file"
-          hidden
-          accept=".csv"
-          onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
-        />
-      </Button>
-      {csvFile && <Typography variant="caption">{csvFile.name}</Typography>}
-
-      <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-        <TextField label="Soru sütunu" value={qCol} onChange={(e) => setQCol(e.target.value)} />
-        <TextField label="Cevap sütunu" value={aCol} onChange={(e) => setACol(e.target.value)} />
-      </Stack>
-
-      <FormControlLabel
-        control={<Checkbox checked={useSample} onChange={(_, v) => setUseSample(v)} />}
-        label="Varsayılan örnek CSV (sample_rag_input.csv)"
-      />
-
-      <CollectionPicker
-        embedModels={embedModels}
-        embedLabel="Embedding modeli (indexleme ile aynı olmalı)"
-        ragTypeLabel="RAG modu (indeksleme ile aynı olmalı)"
-        ragHelp="BM25 anahtar kelime tabanlıdır. Smart mod parent/child koleksiyonlarını kullanır."
-        horizontal
-        classicLabel="Klasik koleksiyon"
-        smartLabel="Smart koleksiyon"
-        embedModel={embedModel}
-        onEmbedModel={setEmbedModel}
-        ragType={ragType}
-        onRagType={setRagType}
-        collectionName={collectionName}
-        onCollectionName={setCollectionName}
-      />
-
-      <RadioGroup row value={ragModeUi} onChange={(_, v) => setRagModeUi(v as any)}>
-        {RAG_MODE_UI.map((r) => (
-          <FormControlLabel key={r} value={r} control={<Radio />} label={r} />
-        ))}
-      </RadioGroup>
-
-      <Stack direction="row" spacing={3} sx={{ my: 2, alignItems: 'center' }}>
-        {ragModeApi !== 'no_rag' && (
+      <Box sx={sectionSx}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          CSV dosyası ve sütunlar
+        </Typography>
+        <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
+          <Button variant="outlined" component="label">
+            CSV yükle
+            <input
+              type="file"
+              hidden
+              accept=".csv"
+              onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
+            />
+          </Button>
+          {csvFile && (
+            <Typography variant="body2" color="text.secondary">
+              {csvFile.name}
+            </Typography>
+          )}
           <TextField
-            type="number"
-            label="k (chunk)"
-            value={k}
-            onChange={(e) => setK(+e.target.value)}
             size="small"
-            sx={{ width: 120 }}
+            label="Soru sütunu"
+            value={qCol}
+            onChange={(e) => setQCol(e.target.value)}
+            sx={{ minWidth: 160 }}
           />
-        )}
-        <FormControlLabel
-          control={<Switch checked={think} onChange={(_, v) => setThink(v)} />}
-          label="Thinking modu"
-        />
-      </Stack>
+          <TextField
+            size="small"
+            label="Cevap sütunu"
+            value={aCol}
+            onChange={(e) => setACol(e.target.value)}
+            sx={{ minWidth: 160 }}
+          />
+        </Stack>
+      </Box>
 
-      {ragModeApi !== 'no_rag' && retrievalMode === 'vector' && (
-        <Box sx={{ maxWidth: 480, mb: 2 }}>
-          <Typography variant="caption">Minimum eşleşme skoru: {scoreTh}</Typography>
-          <Slider
-            min={0.1}
-            max={1}
-            step={0.05}
-            value={scoreTh}
-            onChange={(_, v) => setScoreTh(v as number)}
+      <Box
+        sx={{
+          ...sectionSx,
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1fr) minmax(0, 1fr)' },
+          gap: 3,
+        }}
+      >
+        <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Embedding ve koleksiyon
+          </Typography>
+          <CollectionPicker
+            embedModels={embedModels}
+            embedLabel="Embedding modeli (indexleme ile aynı olmalı)"
+            ragTypeLabel="RAG modu (indeksleme ile aynı olmalı)"
+            ragHelp="BM25 anahtar kelime tabanlıdır. Smart mod parent/child koleksiyonlarını kullanır."
+            horizontal
+            classicLabel="Klasik koleksiyon"
+            smartLabel="Smart koleksiyon"
+            embedModel={embedModel}
+            onEmbedModel={setEmbedModel}
+            ragType={ragType}
+            onRagType={setRagType}
+            collectionName={collectionName}
+            onCollectionName={setCollectionName}
           />
         </Box>
-      )}
 
-      {evalBackend === 'OpenAI' && (
-        <TextField
-          fullWidth
-          size="small"
-          label="OpenAI API key (opsiyonel — boşsa ortam değişkeni)"
-          value={openaiKey}
-          onChange={(e) => setOpenaiKey(e.target.value)}
-          sx={{ mb: 2 }}
-        />
-      )}
+        <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            RAG ayarları
+          </Typography>
+          <RadioGroup
+            row
+            value={ragModeUi}
+            onChange={(_, v) => setRagModeUi(v as (typeof RAG_MODE_UI)[number])}
+          >
+            {RAG_MODE_UI.map((r) => (
+              <FormControlLabel key={r} value={r} control={<Radio />} label={r} />
+            ))}
+          </RadioGroup>
 
-      <Button
-        variant="contained"
-        disabled={startMut.isPending}
-        onClick={() => startMut.mutate()}
-      >
-        Pipeline&apos;ı çalıştır
-      </Button>
+          <Box
+            sx={{
+              mt: 2,
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', sm: 'auto auto' },
+              alignItems: 'center',
+              gap: 2,
+              justifyContent: 'start',
+            }}
+          >
+            {ragModeApi !== 'no_rag' && (
+              <TextField
+                type="number"
+                label="k (chunk)"
+                value={k}
+                onChange={(e) => setK(+e.target.value)}
+                size="small"
+                sx={{ width: 120 }}
+              />
+            )}
+            <FormControlLabel
+              control={<Switch checked={think} onChange={(_, v) => setThink(v)} />}
+              label="Thinking modu"
+            />
+          </Box>
+
+          {ragModeApi !== 'no_rag' && retrievalMode === 'vector' && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption">Minimum eşleşme skoru: {scoreTh}</Typography>
+              <Slider
+                min={0.1}
+                max={1}
+                step={0.05}
+                value={scoreTh}
+                onChange={(_, v) => setScoreTh(v as number)}
+              />
+            </Box>
+          )}
+        </Box>
+      </Box>
+
+      <Box sx={sectionSx}>
+        <Button
+          variant="contained"
+          disabled={startMut.isPending}
+          onClick={() => startMut.mutate()}
+        >
+          Pipeline&apos;ı çalıştır
+        </Button>
+      </Box>
 
       {jobId && jobQ.isFetching && jobQ.data?.status === 'running' && <LinearProgress sx={{ mt: 2 }} />}
 

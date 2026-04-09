@@ -145,19 +145,24 @@ export function ChatEvalPage() {
         onCustomModelsChange={setCustomModels}
       />
 
-      <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-          <Box sx={{ flex: 1 }}>
-            <Stack direction="row" spacing={1} sx={{ mb: 1, alignItems: 'center' }}>
-              <FormControlLabel
-                control={
-                  <Switch checked={evalEnabled} onChange={(_, v) => setEvalEnabled(v)} />
-                }
-                label="Değerlendir"
-              />
-            </Stack>
+      <Box sx={{ mb: 2 }}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', lg: 'repeat(3, minmax(0, 1fr))' },
+            gap: 2,
+          }}
+        >
+          <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Değerlendirme
+            </Typography>
+            <FormControlLabel
+              control={<Switch checked={evalEnabled} onChange={(_, v) => setEvalEnabled(v)} />}
+              label="Değerlendir"
+            />
             {evalEnabled && (
-              <Stack spacing={1}>
+              <Stack spacing={1} sx={{ mt: 1 }}>
                 <TextField
                   select
                   label="Motor"
@@ -172,12 +177,20 @@ export function ChatEvalPage() {
                   <option>Yerel (Ollama)</option>
                 </TextField>
                 {evalBackend === 'OpenAI' ? (
-                  <TextField
-                    size="small"
-                    label="OpenAI model"
-                    value={evalModelName}
-                    onChange={(e) => setEvalModelName(e.target.value)}
-                  />
+                  <>
+                    <TextField
+                      size="small"
+                      label="OpenAI model"
+                      value={evalModelName}
+                      onChange={(e) => setEvalModelName(e.target.value)}
+                    />
+                    <TextField
+                      size="small"
+                      label="OpenAI API key (opsiyonel)"
+                      value={openaiKey}
+                      onChange={(e) => setOpenaiKey(e.target.value)}
+                    />
+                  </>
                 ) : (
                   <TextField
                     select
@@ -197,7 +210,10 @@ export function ChatEvalPage() {
               </Stack>
             )}
           </Box>
-          <Box sx={{ flex: 1 }}>
+          <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Embedding ve retrieval
+            </Typography>
             <CollectionPicker
               embedModels={embedModels}
               embedLabel="Embedding modeli"
@@ -214,7 +230,10 @@ export function ChatEvalPage() {
               onCollectionName={setCollectionName}
             />
           </Box>
-          <Box sx={{ flex: 1 }}>
+          <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              RAG ayarları
+            </Typography>
             <RadioGroup
               value={ragModeUi}
               onChange={(_, v) => setRagModeUi(v as (typeof RAG_MODE_UI)[number])}
@@ -223,16 +242,22 @@ export function ChatEvalPage() {
                 <FormControlLabel key={r} value={r} control={<Radio />} label={r} />
               ))}
             </RadioGroup>
-            {ragModeApi !== 'no_rag' && (
-              <TextField
-                type="number"
-                label="k"
-                value={k}
-                onChange={(e) => setK(+e.target.value)}
-                size="small"
-                sx={{ mt: 1 }}
+            <Stack direction="row" spacing={2} sx={{ mt: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+              {ragModeApi !== 'no_rag' && (
+                <TextField
+                  type="number"
+                  label="k"
+                  value={k}
+                  onChange={(e) => setK(+e.target.value)}
+                  size="small"
+                  sx={{ width: 120 }}
+                />
+              )}
+              <FormControlLabel
+                control={<Switch checked={think} onChange={(_, v) => setThink(v)} />}
+                label="Thinking"
               />
-            )}
+            </Stack>
             {ragModeApi !== 'no_rag' && retrievalMode === 'vector' && (
               <Box sx={{ mt: 1 }}>
                 <Typography variant="caption">Score threshold: {scoreTh}</Typography>
@@ -245,43 +270,33 @@ export function ChatEvalPage() {
                 />
               </Box>
             )}
-            <FormControlLabel
-              control={<Switch checked={think} onChange={(_, v) => setThink(v)} />}
-              label="Thinking"
-            />
           </Box>
+        </Box>
+      </Box>
+
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Soru ve referans
+        </Typography>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+          <TextField
+            label="Soru"
+            multiline
+            minRows={6}
+            fullWidth
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+          <TextField
+            label="Beklenen / referans cevap"
+            multiline
+            minRows={6}
+            fullWidth
+            value={expected}
+            onChange={(e) => setExpected(e.target.value)}
+          />
         </Stack>
-      </Paper>
-
-      {evalBackend === 'OpenAI' && (
-        <TextField
-          fullWidth
-          size="small"
-          label="OpenAI API key (opsiyonel)"
-          value={openaiKey}
-          onChange={(e) => setOpenaiKey(e.target.value)}
-          sx={{ mb: 2 }}
-        />
-      )}
-
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }}>
-        <TextField
-          label="Soru"
-          multiline
-          minRows={6}
-          fullWidth
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-        />
-        <TextField
-          label="Beklenen / referans cevap"
-          multiline
-          minRows={6}
-          fullWidth
-          value={expected}
-          onChange={(e) => setExpected(e.target.value)}
-        />
-      </Stack>
+      </Box>
 
       <Button
         variant="contained"
@@ -316,7 +331,11 @@ export function ChatEvalPage() {
                 }}
               >
                 {resp.chunks.map((c: any, i: number) => (
-                  <Paper key={i} sx={{ p: 1, border: '1px solid #4a90d9', bgcolor: '#1e1e1e' }}>
+                  <Paper
+                    key={i}
+                    variant="outlined"
+                    sx={{ p: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+                  >
                     <Typography variant="caption" color="primary">
                       Chunk {i + 1} — {smartRag ? 'Child / Parent' : ''}
                     </Typography>
