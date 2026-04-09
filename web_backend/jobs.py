@@ -9,10 +9,6 @@ from typing import Any, Callable, Dict, Optional
 ProgressCallback = Callable[[str, int, int, float], None]
 
 
-def _noop_progress(_phase: str, _cur: int, _total: int, _elapsed: float) -> None:
-    pass
-
-
 class JobStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()

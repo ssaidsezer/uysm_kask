@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-WORKSPACE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(__file__).resolve().parent / "data"
 PROFILES_FILE = DATA_DIR / "model_profiles.json"
 LOCK_FILE = DATA_DIR / "model_profiles.json.lock"

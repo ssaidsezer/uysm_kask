@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import io
 import json
 import os
@@ -200,6 +199,22 @@ def _json_safe_rows(rows: List[dict]) -> List[dict]:
                 row[k] = str(v)
         out.append(row)
     return out
+
+
+def _parse_json_form_field(
+    raw_json: str,
+    *,
+    field_name: str,
+    default: Any,
+    expected_type: type,
+    require_type_always: bool = True,
+) -> Any:
+    value = json.loads(raw_json) if raw_json else default
+    if require_type_always or value:
+        if not isinstance(value, expected_type):
+            exp_name = "nesne" if expected_type is dict else "liste"
+            raise ValueError(f"{field_name} {exp_name} olmalı")
+    return value
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -453,30 +468,35 @@ async def start_csv_job(
 
     try:
         qa_models: List[str] = json.loads(qa_models_json) if qa_models_json else []
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="qa_models_json geçersiz JSON.")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="qa_models_json geçersiz JSON.") from exc
     try:
-        qa_profile_map: dict = (
-            json.loads(qa_profile_by_model_json) if qa_profile_by_model_json else {}
+        qa_profile_map: dict = _parse_json_form_field(
+            qa_profile_by_model_json,
+            field_name="qa_profile_by_model",
+            default={},
+            expected_type=dict,
         )
-        if not isinstance(qa_profile_map, dict):
-            raise ValueError("qa_profile_by_model nesne olmalı")
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"qa_profile_by_model_json: {exc}") from exc
     try:
-        qa_param_overrides: dict = (
-            json.loads(qa_param_overrides_json) if qa_param_overrides_json else {}
+        qa_param_overrides: dict = _parse_json_form_field(
+            qa_param_overrides_json,
+            field_name="qa_param_overrides",
+            default={},
+            expected_type=dict,
+            require_type_always=False,
         )
-        if qa_param_overrides and not isinstance(qa_param_overrides, dict):
-            raise ValueError("qa_param_overrides nesne olmalı")
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"qa_param_overrides_json: {exc}") from exc
     try:
-        eval_param_overrides: dict = (
-            json.loads(eval_param_overrides_json) if eval_param_overrides_json else {}
+        eval_param_overrides: dict = _parse_json_form_field(
+            eval_param_overrides_json,
+            field_name="eval_param_overrides",
+            default={},
+            expected_type=dict,
+            require_type_always=False,
         )
-        if eval_param_overrides and not isinstance(eval_param_overrides, dict):
-            raise ValueError("eval_param_overrides nesne olmalı")
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"eval_param_overrides_json: {exc}") from exc
 
