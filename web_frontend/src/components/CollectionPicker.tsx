@@ -83,6 +83,15 @@ export function CollectionPicker(props: {
         value={props.ragType}
         onChange={(_, v) => props.onRagType(v as RagTypeUi)}
         row={props.horizontal ?? false}
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+          columnGap: 1,
+          rowGap: 0.5,
+          '& .MuiFormControlLabel-root': {
+            marginRight: 0,
+          },
+        }}
       >
         {(
           [
