@@ -26,12 +26,23 @@ class AppConfigResponse(BaseModel):
     smart_boundary_llm_model: str
 
 
+class MonitorStats(BaseModel):
+    cpu_usage: float = 0.0
+    gpu_usage: float = 0.0
+    vram_used: Optional[float] = None
+    vram_total: Optional[float] = None
+    ram_used: Optional[float] = None
+    ram_total: Optional[float] = None
+    storage_used: Optional[float] = None
+    storage_total: Optional[float] = None
+
+
 class ConnectionStatusResponse(BaseModel):
     qdrant_ok: bool
     qdrant_message: str
     ollama_ok: bool
     ollama_message: str
-    monitor: Optional[dict] = None
+    monitor: Optional[MonitorStats] = None
     monitor_error: Optional[str] = None
 
 

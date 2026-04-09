@@ -41,6 +41,7 @@ from web_backend.compat import (
     delete_ollama_model,
     delete_qdrant_collection,
     ensure_tmp_dir,
+    get_monitor_base_url,
     get_monitor_stats,
     get_ollama_base_url,
     list_all_ollama_model_names_raw,
@@ -109,11 +110,12 @@ def health() -> HealthResponse:
 
 @app.get("/api/config", response_model=AppConfigResponse)
 def config() -> AppConfigResponse:
+    monitor_url = get_monitor_base_url()
     return AppConfigResponse(
         qdrant_url=os.environ.get("QDRANT_URL", QDRANT_URL),
         default_collection_name=os.environ.get("QDRANT_COLLECTION", DEFAULT_COLLECTION_NAME),
         ollama_base_url=get_ollama_base_url(),
-        monitor_url=os.environ.get("MONITOR_URL", "http://192.168.1.151:8081"),
+        monitor_url=monitor_url,
         qa_ollama_model=QA_OLLAMA_MODEL,
         eval_model_name=EVAL_MODEL_NAME,
         chunk_size_default=int(os.environ.get("CHUNK_SIZE", "1000")),

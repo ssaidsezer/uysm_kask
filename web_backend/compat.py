@@ -27,6 +27,15 @@ def get_ollama_base_url() -> str:
     return base_url.rstrip("/")
 
 
+def get_monitor_base_url() -> str:
+    monitor_url = os.environ.get("MONITOR_URL", "").strip()
+    if not monitor_url:
+        return ""
+    if not monitor_url.startswith("http"):
+        monitor_url = f"http://{monitor_url}"
+    return monitor_url.rstrip("/")
+
+
 def collection_name_full(
     base: str, embed_model: str, chunk_size: int, chunk_overlap: int
 ) -> str:
@@ -230,11 +239,61 @@ def list_all_ollama_model_names_raw() -> tuple[List[str], str]:
 
 
 def get_monitor_stats() -> tuple[dict | None, str]:
-    monitor_url = os.environ.get("MONITOR_URL", "http://192.168.1.151:8081").rstrip("/")
+    monitor_url = get_monitor_base_url()
+    if not monitor_url:
+        return None, "MONITOR_URL tanımlı değil."
+
     try:
         resp = requests.get(f"{monitor_url}/stats", timeout=3)
         if resp.status_code == 200:
-            return resp.json(), ""
+            raw = resp.json() or {}
+            return _normalize_monitor_stats(raw), ""
         return None, "Sistem bilgisi alınamadı"
     except Exception:
         return None, f"Monitor erişilemiyor ({monitor_url})"
+
+
+def _get_num(payload: dict, *keys: str) -> float | int | None:
+    for key in keys:
+        val = payload.get(key)
+        if val is None:
+            continue
+        if isinstance(val, bool):
+            continue
+        if isinstance(val, (int, float)):
+            return val
+        if isinstance(val, str):
+            s = val.strip().replace(",", ".")
+            if not s:
+                continue
+            try:
+                return float(s)
+            except ValueError:
+                continue
+    return None
+
+
+def _normalize_monitor_stats(raw: dict) -> dict:
+    cpu_usage = _get_num(raw, "cpu_usage", "cpu_percent", "cpu")
+    gpu_usage = _get_num(raw, "gpu_usage", "gpu_percent", "gpu")
+    vram_used = _get_num(raw, "vram_used", "gpu_memory_used", "gpu_vram_used")
+    vram_total = _get_num(raw, "vram_total", "gpu_memory_total", "gpu_vram_total")
+    ram_used = _get_num(raw, "ram_used", "memory_used", "mem_used")
+    ram_total = _get_num(raw, "ram_total", "memory_total", "mem_total")
+    storage_used = _get_num(raw, "storage_used", "disk_used")
+    storage_total = _get_num(raw, "storage_total", "disk_total")
+    disk_free = _get_num(raw, "disk_free", "storage_free")
+
+    if storage_used is None and storage_total is not None and disk_free is not None:
+        storage_used = float(storage_total) - float(disk_free)
+
+    return {
+        "cpu_usage": cpu_usage if cpu_usage is not None else 0.0,
+        "gpu_usage": gpu_usage if gpu_usage is not None else 0.0,
+        "vram_used": vram_used,
+        "vram_total": vram_total,
+        "ram_used": ram_used,
+        "ram_total": ram_total,
+        "storage_used": storage_used,
+        "storage_total": storage_total,
+    }
