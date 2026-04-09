@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import LinearProgress from '@mui/material/LinearProgress'
 import Radio from '@mui/material/Radio'
@@ -125,38 +126,110 @@ export function IndexPage() {
       <Typography variant="h6" gutterBottom>
         PDF&apos;leri Qdrant&apos;a indeksle (Ollama Embedding)
       </Typography>
-      <Button variant="outlined" component="label" sx={{ mr: 1, mb: 2 }}>
-        PDF yükle
-        <input
-          type="file"
-          hidden
-          multiple
-          accept=".pdf"
-          onChange={(e) => setFiles(e.target.files ? Array.from(e.target.files) : [])}
-        />
-      </Button>
-      {files.length > 0 && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          {files.map((f) => f.name).join(', ')}
-        </Typography>
-      )}
-
-      <RadioGroup
-        row
-        value={indexMode}
-        onChange={(_, v) => setIndexMode(v as 'classic' | 'smart')}
+      <Box
+        sx={{
+          mb: 2,
+          p: 2,
+          border: '1px solid',
+          borderColor: 'divider',
+          borderRadius: 2,
+          backgroundColor: 'background.paper',
+        }}
       >
-        <FormControlLabel
-          value="classic"
-          control={<Radio />}
-          label="Klasik (sabit boyut chunking)"
-        />
-        <FormControlLabel
-          value="smart"
-          control={<Radio />}
-          label="Smart (LLM semantik chunking)"
-        />
-      </RadioGroup>
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1}
+          alignItems={{ xs: 'stretch', sm: 'center' }}
+        >
+          <Button variant="outlined" component="label">
+            PDF yükle
+            <input
+              type="file"
+              hidden
+              multiple
+              accept=".pdf"
+              onChange={(e) => {
+                const selected = e.target.files ? Array.from(e.target.files) : []
+                if (!selected.length) return
+                setFiles((prev) => {
+                  const merged = [...prev]
+                  selected.forEach((file) => {
+                    const exists = merged.some(
+                      (f) =>
+                        f.name === file.name &&
+                        f.size === file.size &&
+                        f.lastModified === file.lastModified,
+                    )
+                    if (!exists) merged.push(file)
+                  })
+                  return merged
+                })
+                e.currentTarget.value = ''
+              }}
+            />
+          </Button>
+          {files.length > 0 && (
+            <Button
+              color="error"
+              variant="text"
+              onClick={() => setFiles([])}
+              sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}
+            >
+              Tüm PDF&apos;leri temizle
+            </Button>
+          )}
+        </Stack>
+
+        {files.length > 0 && (
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
+            {files.map((f, idx) => (
+              <Chip
+                key={`${f.name}-${f.size}-${f.lastModified}-${idx}`}
+                label={f.name}
+                onDelete={() =>
+                  setFiles((prev) => prev.filter((_, fileIndex) => fileIndex !== idx))
+                }
+                variant="outlined"
+              />
+            ))}
+          </Stack>
+        )}
+      </Box>
+
+      <Box
+        sx={{
+          mb: 2,
+          p: 2,
+          border: '1px solid',
+          borderColor: 'divider',
+          borderRadius: 2,
+          backgroundColor: 'background.paper',
+        }}
+      >
+        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+          Gruplama (Chunking) ayarları
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          İhtiyacınıza göre sabit chunking veya semantik smart chunking seçin.
+        </Typography>
+
+        <RadioGroup
+          row
+          value={indexMode}
+          onChange={(_, v) => setIndexMode(v as 'classic' | 'smart')}
+          sx={{ mb: 1 }}
+        >
+          <FormControlLabel
+            value="classic"
+            control={<Radio />}
+            label="Klasik (sabit boyut chunking)"
+          />
+          <FormControlLabel
+            value="smart"
+            control={<Radio />}
+            label="Smart (LLM semantik chunking)"
+          />
+        </RadioGroup>
 
       {embedQ.isLoading && (
         <Alert severity="info" sx={{ my: 1 }}>
@@ -179,7 +252,7 @@ export function IndexPage() {
             value={embedModel}
             onChange={(e) => setEmbedModel(e.target.value)}
             slotProps={{ select: { native: true } }}
-            sx={{ mb: 2 }}
+            sx={{ mb: 1.5 }}
           >
             {embedModels.map((m: string) => (
               <option key={m} value={m}>
@@ -241,6 +314,7 @@ export function IndexPage() {
           )}
         </>
       )}
+      </Box>
 
       {preview.text && <Alert severity="info">{preview.text}</Alert>}
       {indexMode === 'smart' && smartChild >= smartParent && (
