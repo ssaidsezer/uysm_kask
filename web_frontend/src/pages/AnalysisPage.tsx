@@ -4,6 +4,7 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import MenuItem from '@mui/material/MenuItem'
+import Paper from '@mui/material/Paper'
 import Radio from '@mui/material/Radio'
 import RadioGroup from '@mui/material/RadioGroup'
 import Stack from '@mui/material/Stack'
@@ -12,8 +13,10 @@ import Typography from '@mui/material/Typography'
 import { DataGrid } from '@mui/x-data-grid'
 import type { GridColDef } from '@mui/x-data-grid'
 import { useMemo, useState } from 'react'
-import Plot from 'react-plotly.js'
+import PlotLib from 'react-plotly.js'
 import { api } from '../api/client'
+
+const Plot = (PlotLib as unknown as { default?: typeof PlotLib }).default ?? PlotLib
 
 export function AnalysisPage() {
   const [result, setResult] = useState<any>(null)
@@ -21,6 +24,7 @@ export function AnalysisPage() {
   const [filterModel, setFilterModel] = useState('(Tümü)')
   const [filterVerdict, setFilterVerdict] = useState('(Tümü)')
   const [filterRag, setFilterRag] = useState('(Tümü)')
+  const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null)
 
   const mut = useMutation({
     mutationFn: async (file: File) => {
@@ -181,6 +185,11 @@ export function AnalysisPage() {
               ...c.plotly.layout,
               autosize: true,
               height: 420,
+              hoverlabel: {
+                bgcolor: '#111827',
+                bordercolor: '#374151',
+                font: { color: '#f9fafb' },
+              },
             }}
             style={{ width: '100%' }}
             useResizeHandler
@@ -193,7 +202,16 @@ export function AnalysisPage() {
       <Box sx={{ mt: 2 }}>
           <Plot
             data={result.distribution_chart.data}
-            layout={{ ...result.distribution_chart.layout, autosize: true, height: 420 }}
+            layout={{
+              ...result.distribution_chart.layout,
+              autosize: true,
+              height: 420,
+              hoverlabel: {
+                bgcolor: '#111827',
+                bordercolor: '#374151',
+                font: { color: '#f9fafb' },
+              },
+            }}
             style={{ width: '100%' }}
             useResizeHandler
           />
@@ -241,6 +259,7 @@ export function AnalysisPage() {
               <DataGrid
                 rows={problemData.map((r: object, id: number) => ({ id, ...r }))}
                 columns={problemCols}
+                onRowClick={(params) => setSelectedRow(params.row as Record<string, unknown>)}
               />
             </Box>
           )}
@@ -300,9 +319,37 @@ export function AnalysisPage() {
             <DataGrid
               rows={detailRowsFiltered.map((r: object, id: number) => ({ id, ...r }))}
               columns={detailCols}
+              onRowClick={(params) => setSelectedRow(params.row as Record<string, unknown>)}
             />
           </Box>
         </>
+      )}
+      {selectedRow && (
+        <Paper variant="outlined" sx={{ mt: 2, p: 1.5 }}>
+          <Stack
+            direction="row"
+            sx={{ mb: 1, justifyContent: 'space-between', alignItems: 'center' }}
+          >
+            <Typography variant="subtitle2">Seçili Satır Detayı</Typography>
+            <Button size="small" onClick={() => setSelectedRow(null)}>
+              Kapat
+            </Button>
+          </Stack>
+          <Stack spacing={1}>
+            {Object.entries(selectedRow)
+              .filter(([k]) => k !== 'id')
+              .map(([key, value]) => (
+                <Paper key={key} variant="outlined" sx={{ p: 1.25 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    {key}
+                  </Typography>
+                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {value == null ? '—' : String(value)}
+                  </Typography>
+                </Paper>
+              ))}
+          </Stack>
+        </Paper>
       )}
     </Box>
   )

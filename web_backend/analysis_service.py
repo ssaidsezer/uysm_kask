@@ -16,7 +16,8 @@ def _grouped_bar(
     pivot_df: pd.DataFrame, title: str, y_label: str, color_map: dict | None = None
 ) -> go.Figure:
     fig = go.Figure()
-    default_colors = ["#1f77b4", "#17becf", "#aec7e8", "#9edae5"]
+    # Dark-theme friendly, high-contrast palette for grouped bars.
+    default_colors = ["#60A5FA", "#F59E0B", "#34D399", "#F472B6", "#A78BFA", "#F87171"]
     for i, col in enumerate(pivot_df.columns):
         color = (color_map or {}).get(col, default_colors[i % len(default_colors)])
         fig.add_trace(
