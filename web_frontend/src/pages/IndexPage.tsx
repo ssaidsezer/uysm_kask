@@ -139,7 +139,7 @@ export function IndexPage() {
         <Stack
           direction={{ xs: 'column', sm: 'row' }}
           spacing={1}
-          alignItems={{ xs: 'stretch', sm: 'center' }}
+          sx={{ alignItems: { xs: 'stretch', sm: 'center' } }}
         >
           <Button variant="outlined" component="label">
             PDF yükle
@@ -181,7 +181,7 @@ export function IndexPage() {
         </Stack>
 
         {files.length > 0 && (
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
+          <Stack direction="row" spacing={1} sx={{ mt: 2, flexWrap: 'wrap' }}>
             {files.map((f, idx) => (
               <Chip
                 key={`${f.name}-${f.size}-${f.lastModified}-${idx}`}

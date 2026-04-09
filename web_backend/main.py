@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from pipeline import (
+    DEFAULT_EVAL_SYSTEM_PROMPT,
     EVAL_MODEL_NAME,
     QA_OLLAMA_MODEL,
     get_openai_client,
@@ -52,6 +53,16 @@ from web_backend.compat import (
     smart_collection_name_full,
 )
 from web_backend.jobs import job_store
+from web_backend.model_profiles_store import (
+    clone_profile,
+    create_profile,
+    delete_profile,
+    list_profiles,
+    resolve_eval_profile,
+    resolve_qa_for_model,
+    resolve_tts_profile,
+    update_profile,
+)
 from web_backend.schemas import (
     AnalysisResponse,
     AppConfigResponse,
@@ -65,6 +76,10 @@ from web_backend.schemas import (
     IndexJobStartResponse,
     JobProgress,
     JobStatusResponse,
+    ModelProfileCreate,
+    ModelProfileOut,
+    ModelProfileUpdate,
+    ModelProfilesListResponse,
     OllamaModelsResponse,
     PullModelRequest,
     SimpleMessageResponse,
@@ -86,6 +101,90 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _to_profile_out(raw: dict) -> ModelProfileOut:
+    return ModelProfileOut(
+        id=str(raw["id"]),
+        name=str(raw["name"]),
+        model_name=str(raw["model_name"]),
+        system_prompt=raw.get("system_prompt"),
+        params=dict(raw.get("params") or {}),
+        is_default=bool(raw.get("is_default")),
+        version=int(raw.get("version", 1)),
+        updated_at=str(raw.get("updated_at", "")),
+    )
+
+
+@app.get("/api/model-profiles", response_model=ModelProfilesListResponse)
+def api_list_model_profiles() -> ModelProfilesListResponse:
+    profiles = [_to_profile_out(p) for p in list_profiles()]
+    return ModelProfilesListResponse(profiles=profiles)
+
+
+@app.post("/api/model-profiles", response_model=ModelProfileOut)
+def api_create_model_profile(body: ModelProfileCreate) -> ModelProfileOut:
+    try:
+        params = body.params.model_dump(exclude_none=True)
+        created = create_profile(
+            name=body.name,
+            model_name=body.model_name,
+            system_prompt=body.system_prompt,
+            params=params,
+            is_default=body.is_default,
+        )
+        return _to_profile_out(created)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/model-profiles/{profile_id}", response_model=ModelProfileOut)
+def api_update_model_profile(profile_id: str, body: ModelProfileUpdate) -> ModelProfileOut:
+    try:
+        params_dict = None
+        if body.params is not None:
+            params_dict = body.params.model_dump(exclude_none=True)
+        updated = update_profile(
+            profile_id,
+            name=body.name,
+            model_name=body.model_name,
+            system_prompt=body.system_prompt if not body.system_prompt_clear else None,
+            system_prompt_set_null=body.system_prompt_clear,
+            params=params_dict,
+            is_default=body.is_default,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Profil bulunamadı.")
+        return _to_profile_out(updated)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/model-profiles/{profile_id}", response_model=SimpleMessageResponse)
+def api_delete_model_profile(profile_id: str) -> SimpleMessageResponse:
+    ok = delete_profile(profile_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Profil bulunamadı.")
+    return SimpleMessageResponse(success=True, message="Silindi.")
+
+
+@app.get("/api/model-profiles/default-templates")
+def api_model_profile_default_templates() -> dict:
+    return {
+        "eval_system": DEFAULT_EVAL_SYSTEM_PROMPT,
+        "note": "QA için system_prompt boşsa yalnızca yerleşik kullanıcı mesajı şablonu kullanılır.",
+    }
+
+
+@app.post("/api/model-profiles/{profile_id}/clone", response_model=ModelProfileOut)
+def api_clone_model_profile(profile_id: str) -> ModelProfileOut:
+    try:
+        cloned = clone_profile(profile_id)
+        if not cloned:
+            raise HTTPException(status_code=404, detail="Profil bulunamadı.")
+        return _to_profile_out(cloned)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _json_safe_rows(rows: List[dict]) -> List[dict]:
@@ -340,8 +439,15 @@ async def start_csv_job(
     csv_score_threshold: float = Form(0.55),
     rag_mode: str = Form("rag"),
     k: int = Form(5),
+    thinking_enabled: bool = Form(False),
     qa_models_json: str = Form("[]"),
     openai_api_key: Optional[str] = Form(None),
+    use_saved_qa_defaults: bool = Form(True),
+    qa_profile_by_model_json: str = Form("{}"),
+    qa_param_overrides_json: str = Form("{}"),
+    use_saved_eval_defaults: bool = Form(True),
+    eval_profile_id: Optional[str] = Form(None),
+    eval_param_overrides_json: str = Form("{}"),
 ) -> IndexJobStartResponse:
     """qa_models_json: JSON array of model names."""
 
@@ -349,6 +455,30 @@ async def start_csv_job(
         qa_models: List[str] = json.loads(qa_models_json) if qa_models_json else []
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="qa_models_json geçersiz JSON.")
+    try:
+        qa_profile_map: dict = (
+            json.loads(qa_profile_by_model_json) if qa_profile_by_model_json else {}
+        )
+        if not isinstance(qa_profile_map, dict):
+            raise ValueError("qa_profile_by_model nesne olmalı")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"qa_profile_by_model_json: {exc}") from exc
+    try:
+        qa_param_overrides: dict = (
+            json.loads(qa_param_overrides_json) if qa_param_overrides_json else {}
+        )
+        if qa_param_overrides and not isinstance(qa_param_overrides, dict):
+            raise ValueError("qa_param_overrides nesne olmalı")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"qa_param_overrides_json: {exc}") from exc
+    try:
+        eval_param_overrides: dict = (
+            json.loads(eval_param_overrides_json) if eval_param_overrides_json else {}
+        )
+        if eval_param_overrides and not isinstance(eval_param_overrides, dict):
+            raise ValueError("eval_param_overrides nesne olmalı")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"eval_param_overrides_json: {exc}") from exc
 
     tmp = ensure_tmp_dir()
     sample_path = WORKSPACE_DIR / "sample_rag_input.csv"
@@ -390,10 +520,32 @@ async def start_csv_job(
         if csv_path is None:
             return {"rows": [], "errors": errors}
 
+        eval_sys, eval_oopts, eval_think_prof, eval_openai_extras, eval_tr = resolve_eval_profile(
+            eval_backend=eval_backend,
+            eval_model_name=eval_model_name or EVAL_MODEL_NAME,
+            local_eval_model_name=local_eval_model_name,
+            use_saved_defaults=use_saved_eval_defaults,
+            profile_id_override=(eval_profile_id or "").strip() or None,
+            param_overrides=eval_param_overrides or None,
+        )
+
         _models = qa_models or ([QA_OLLAMA_MODEL] if not all_m else [all_m[0]])
         n_models = len(_models)
         for idx, qa_model in enumerate(_models):
             try:
+                pid_ov = qa_profile_map.get(qa_model)
+                if isinstance(pid_ov, str):
+                    pid_ov = pid_ov.strip() or None
+                else:
+                    pid_ov = None
+                qa_sys, qa_opts, qa_think_prof, qa_tr = resolve_qa_for_model(
+                    qa_model,
+                    use_saved_defaults=use_saved_qa_defaults,
+                    profile_id_override=pid_ov,
+                    param_overrides=qa_param_overrides or None,
+                )
+                qa_think = bool(thinking_enabled or qa_think_prof)
+                trace = {**qa_tr, **eval_tr}
                 model_rows = run_full_pipeline(
                     csv_path=str(csv_path),
                     collection_name=csv_collection_name,
@@ -412,6 +564,14 @@ async def start_csv_job(
                     smart_chunking=csv_smart_rag,
                     score_threshold=float(csv_score_threshold),
                     retrieval_mode=csv_retrieval_mode,
+                    qa_system_prompt=qa_sys,
+                    qa_ollama_options=qa_opts or None,
+                    qa_think=qa_think,
+                    eval_system_prompt=eval_sys,
+                    eval_ollama_options=eval_oopts or None,
+                    eval_think=eval_think_prof,
+                    eval_openai_extras=eval_openai_extras or None,
+                    profile_trace=trace,
                 )
                 rows.extend(model_rows)
             except Exception as exc:
@@ -492,12 +652,31 @@ def voice_tts(req: TTSRequest) -> Response:
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Metin boş.")
+    pm, p_sp, p_vp, _merged, _tr = resolve_tts_profile(
+        profile_id_override=(req.tts_profile_id or "").strip() or None,
+        model_name_hint=(req.model or "").strip() or None,
+        use_saved_defaults=req.use_saved_tts_defaults,
+        param_overrides=req.tts_param_overrides,
+    )
+    model_use = (req.model or "").strip() or (pm or "").strip() or "facebook/mms-tts-tur"
+    speaker_final = req.speaker_id
+    if speaker_final is not None and str(speaker_final).strip() == "":
+        speaker_final = None
+    if speaker_final is None:
+        speaker_final = p_sp
+
+    if req.voice_preset and req.voice_preset != "Varsayılan":
+        preset_final: Optional[str] = req.voice_preset
+    elif p_vp and str(p_vp).strip() and p_vp != "Varsayılan":
+        preset_final = str(p_vp).strip()
+    else:
+        preset_final = None
     try:
         wav_bytes, _sr, duration = synthesize_speech(
             text,
-            model=req.model,
-            speaker_id=req.speaker_id,
-            voice_preset=req.voice_preset if req.voice_preset != "Varsayılan" else None,
+            model=model_use,
+            speaker_id=speaker_final,
+            voice_preset=preset_final,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

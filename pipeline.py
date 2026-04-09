@@ -4,7 +4,7 @@ import csv
 import json
 import os
 import time
-from typing import Dict, List, Optional, Sequence, TextIO, Union
+from typing import Any, Dict, List, Optional, Sequence, TextIO, Union
 
 import requests
 from openai import OpenAI
@@ -80,6 +80,28 @@ def _open_csv_safe(path: str):
             except Exception:
                 pass
     return open(path, newline="", encoding="utf-8", errors="replace")
+
+
+DEFAULT_EVAL_SYSTEM_PROMPT = (
+    "Sen taktik muharebe ve askeri eğitim alanında uzman bir otomatik değerlendirici modelsin.\n"
+    "Aşağıdaki kurallara kesinlikle uy:\n"
+    "- Yalnızca tek bir düz JSON nesnesi döndür; başka hiçbir metin ekleme.\n"
+    "- Tüm string değerleri Türkçe yaz.\n"
+    "- 'ai_verdict' için SADECE şu değerlerden birini kullan: correct | partial | incorrect\n"
+    "  * correct: cevap beklenenle büyük ölçüde örtüşüyor, kritik bilgi eksik değil\n"
+    "  * partial: cevap kısmen doğru fakat önemli detay eksik ya da yanıltıcı\n"
+    "  * incorrect: cevap yanlış, tehlikeli veya tamamen alakasız\n"
+    "- 'ai_score' 0-10 arası tam sayı olsun (10=mükemmel, 5=kısmen doğru, 0=yanlış/tehlikeli)\n"
+    "- 'ai_hallucination_risk' için SADECE şu değerlerden birini kullan: low | medium | high\n"
+    "- 'ai_reason' en fazla 2 kısa Türkçe cümle; neyin doğru/yanlış olduğunu açıkla\n\n"
+    "Döndürülecek JSON şeması (başka alan ekleme):\n"
+    "{\n"
+    '  "ai_verdict": "correct" veya "partial" veya "incorrect",\n'
+    '  "ai_score": 0-10 tam sayı,\n'
+    '  "ai_hallucination_risk": "low" veya "medium" veya "high",\n'
+    '  "ai_reason": string\n'
+    "}\n"
+)
 
 
 def _build_rag_prompt(question: str, context: str) -> str:
@@ -161,18 +183,24 @@ def _require_ollama_base_url(base_url: str) -> str:
 
 def _collect_ollama_chat_response(
     *,
-    prompt: str,
+    messages: List[Dict[str, Any]],
     model: str,
     base_url: str,
     timeout: int,
+    options: Optional[Dict[str, Any]] = None,
+    think: bool = False,
 ) -> Dict:
     api_base = _require_ollama_base_url(base_url)
     t0 = time.time()
-    payload: Dict = {
+    payload: Dict[str, Any] = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "stream": False,
     }
+    if think:
+        payload["think"] = True
+    if options:
+        payload["options"] = options
     resp = requests.post(
         f"{api_base}/api/chat",
         json=payload,
@@ -211,6 +239,10 @@ def generate_rag_answer_ollama(
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
+    *,
+    system_prompt: Optional[str] = None,
+    ollama_options: Optional[Dict[str, Any]] = None,
+    think: bool = False,
 ) -> Dict:
     """
     Call a local Ollama model (e.g. Qwen3 1.7B) with question + context.
@@ -219,12 +251,18 @@ def generate_rag_answer_ollama(
       - answer: str
       - response_time_seconds: float
     """
-    prompt = _build_rag_prompt(question, context)
+    user_content = _build_rag_prompt(question, context)
+    o_msgs: List[Dict[str, str]] = []
+    if system_prompt and str(system_prompt).strip():
+        o_msgs.append({"role": "system", "content": str(system_prompt).strip()})
+    o_msgs.append({"role": "user", "content": user_content})
     return _collect_ollama_chat_response(
-        prompt=prompt,
+        messages=o_msgs,
         model=model,
         base_url=base_url,
         timeout=timeout,
+        options=ollama_options,
+        think=think,
     )
 
 
@@ -246,6 +284,10 @@ def generate_no_rag_answer_ollama(
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
+    *,
+    system_prompt: Optional[str] = None,
+    ollama_options: Optional[Dict[str, Any]] = None,
+    think: bool = False,
 ) -> Dict:
     """
     Call a local Ollama model WITHOUT any retrieved context (no RAG).
@@ -254,12 +296,18 @@ def generate_no_rag_answer_ollama(
       - answer: str
       - response_time_seconds: float
     """
-    prompt = _build_no_rag_prompt(question)
+    user_content = _build_no_rag_prompt(question)
+    o_msgs: List[Dict[str, str]] = []
+    if system_prompt and str(system_prompt).strip():
+        o_msgs.append({"role": "system", "content": str(system_prompt).strip()})
+    o_msgs.append({"role": "user", "content": user_content})
     return _collect_ollama_chat_response(
-        prompt=prompt,
+        messages=o_msgs,
         model=model,
         base_url=base_url,
         timeout=timeout,
+        options=ollama_options,
+        think=think,
     )
 
 
@@ -276,6 +324,9 @@ def evaluate_answer(
     record: Dict,
     eval_model: str = EVAL_MODEL_NAME,
     client: Optional[OpenAI] = None,
+    *,
+    system_prompt: Optional[str] = None,
+    extra_create_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Evaluate a single QA record with OpenAI, returning a flat dict suitable for CSV.
@@ -291,26 +342,7 @@ def evaluate_answer(
     if client is None:
         client = get_openai_client()
 
-    system = (
-        "Sen taktik muharebe ve askeri eğitim alanında uzman bir otomatik değerlendirici modelsin.\n"
-        "Aşağıdaki kurallara kesinlikle uy:\n"
-        "- Yalnızca tek bir düz JSON nesnesi döndür; başka hiçbir metin ekleme.\n"
-        "- Tüm string değerleri Türkçe yaz.\n"
-        "- 'ai_verdict' için SADECE şu değerlerden birini kullan: correct | partial | incorrect\n"
-        "  * correct: cevap beklenenle büyük ölçüde örtüşüyor, kritik bilgi eksik değil\n"
-        "  * partial: cevap kısmen doğru fakat önemli detay eksik ya da yanıltıcı\n"
-        "  * incorrect: cevap yanlış, tehlikeli veya tamamen alakasız\n"
-        "- 'ai_score' 0-10 arası tam sayı olsun (10=mükemmel, 5=kısmen doğru, 0=yanlış/tehlikeli)\n"
-        "- 'ai_hallucination_risk' için SADECE şu değerlerden birini kullan: low | medium | high\n"
-        "- 'ai_reason' en fazla 2 kısa Türkçe cümle; neyin doğru/yanlış olduğunu açıkla\n\n"
-        "Döndürülecek JSON şeması (başka alan ekleme):\n"
-        "{\n"
-        '  "ai_verdict": "correct" veya "partial" veya "incorrect",\n'
-        '  "ai_score": 0-10 tam sayı,\n'
-        '  "ai_hallucination_risk": "low" veya "medium" veya "high",\n'
-        '  "ai_reason": string\n'
-        "}\n"
-    )
+    system = (system_prompt or "").strip() or DEFAULT_EVAL_SYSTEM_PROMPT
 
     user = (
         f'Soru: "{record["question"]}"\n'
@@ -318,15 +350,20 @@ def evaluate_answer(
         f'Modelin cevabı: "{record.get("model_answer", "")}"\n'
     )
 
-    response = client.chat.completions.create(
-        model=eval_model,
-        messages=[
+    create_kwargs: Dict[str, Any] = {
+        "model": eval_model,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        response_format={"type": "json_object"},
-        reasoning_effort="medium",
-    )
+        "response_format": {"type": "json_object"},
+        "reasoning_effort": "medium",
+    }
+    if extra_create_kwargs:
+        for k, v in extra_create_kwargs.items():
+            if v is not None:
+                create_kwargs[k] = v
+    response = client.chat.completions.create(**create_kwargs)
 
     msg = response.choices[0].message
 
@@ -358,30 +395,15 @@ def _evaluate_answer_local(
     model: str,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
+    *,
+    system_prompt: Optional[str] = None,
+    ollama_options: Optional[Dict[str, Any]] = None,
+    think: bool = False,
 ) -> Dict:
     """
     OpenAI yerine yerel bir modeli (örn. Ollama) eval için kullan.
     """
-    system = (
-        "Sen taktik muharebe ve askeri eğitim alanında uzman bir otomatik değerlendirici modelsin.\n"
-        "Aşağıdaki kurallara kesinlikle uy:\n"
-        "- Yalnızca tek bir düz JSON nesnesi döndür; başka hiçbir metin ekleme.\n"
-        "- Tüm string değerleri Türkçe yaz.\n"
-        "- 'ai_verdict' için SADECE şu değerlerden birini kullan: correct | partial | incorrect\n"
-        "  * correct: cevap beklenenle büyük ölçüde örtüşüyor, kritik bilgi eksik değil\n"
-        "  * partial: cevap kısmen doğru fakat önemli detay eksik ya da yanıltıcı\n"
-        "  * incorrect: cevap yanlış, tehlikeli veya tamamen alakasız\n"
-        "- 'ai_score' 0-10 arası tam sayı olsun (10=mükemmel, 5=kısmen doğru, 0=yanlış/tehlikeli)\n"
-        "- 'ai_hallucination_risk' için SADECE şu değerlerden birini kullan: low | medium | high\n"
-        "- 'ai_reason' en fazla 2 kısa Türkçe cümle; neyin doğru/yanlış olduğunu açıkla\n\n"
-        "Döndürülecek JSON şeması (başka alan ekleme):\n"
-        "{\n"
-        '  \"ai_verdict\": \"correct\" veya \"partial\" veya \"incorrect\",\n'
-        '  \"ai_score\": 0-10 tam sayı,\n'
-        '  \"ai_hallucination_risk\": \"low\" veya \"medium\" veya \"high\",\n'
-        '  \"ai_reason\": string\n'
-        "}\n"
-    )
+    system = (system_prompt or "").strip() or DEFAULT_EVAL_SYSTEM_PROMPT
 
     user = (
         f'Soru: "{record["question"]}"\n'
@@ -389,11 +411,8 @@ def _evaluate_answer_local(
         f'Modelin cevabı: "{record.get("model_answer", "")}"\n'
     )
 
-    prompt = (
-        system
-        + "\n\n"
-        + user
-        + "\n\nYukarıdaki talimatlara göre SADECE geçerli bir JSON nesnesi üret. Başka metin ekleme."
+    user_tail = (
+        user + "\n\nYukarıdaki talimatlara göre SADECE geçerli bir JSON nesnesi üret. Başka metin ekleme."
     )
 
     if not base_url:
@@ -402,18 +421,23 @@ def _evaluate_answer_local(
             "Lütfen .env dosyasına uzak sunucu adresini ekleyin."
         )
 
+    msg_list: List[Dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_tail},
+    ]
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": msg_list,
+        "stream": False,
+    }
+    if think:
+        payload["think"] = True
+    if ollama_options:
+        payload["options"] = ollama_options
+
     resp = requests.post(
         f"{base_url.rstrip('/')}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "stream": False,
-        },
+        json=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -452,6 +476,11 @@ def evaluate_answer_any(
     local_model: Optional[str] = None,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
+    *,
+    eval_system_prompt: Optional[str] = None,
+    eval_ollama_options: Optional[Dict[str, Any]] = None,
+    eval_think: bool = False,
+    eval_openai_extras: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Bir QA kaydını seçilen backend ile değerlendir.
@@ -469,6 +498,9 @@ def evaluate_answer_any(
             model=model_name,
             base_url=base_url,
             timeout=timeout,
+            system_prompt=eval_system_prompt,
+            ollama_options=eval_ollama_options,
+            think=eval_think,
         )
 
     # Varsayılan: mevcut OpenAI tabanlı evaluate_answer fonksiyonunu kullan
@@ -476,6 +508,8 @@ def evaluate_answer_any(
         record=record,
         eval_model=eval_model,
         client=client,
+        system_prompt=eval_system_prompt,
+        extra_create_kwargs=eval_openai_extras,
     )
 
 
@@ -497,6 +531,15 @@ def run_full_pipeline(
     score_threshold: float = 0.55,
     retrieval_mode: str = "vector",
     embed_model: str = "",
+    *,
+    qa_system_prompt: Optional[str] = None,
+    qa_ollama_options: Optional[Dict[str, Any]] = None,
+    qa_think: bool = False,
+    eval_system_prompt: Optional[str] = None,
+    eval_ollama_options: Optional[Dict[str, Any]] = None,
+    eval_think: bool = False,
+    eval_openai_extras: Optional[Dict[str, Any]] = None,
+    profile_trace: Optional[Dict[str, Any]] = None,
 ) -> List[Dict]:
     """
     High-level helper:
@@ -567,6 +610,9 @@ def run_full_pipeline(
                 question=question,
                 context=context,
                 model=qa_model,
+                system_prompt=qa_system_prompt,
+                ollama_options=qa_ollama_options,
+                think=qa_think,
             )
             record = {
                 "model": qa_model,
@@ -585,6 +631,10 @@ def run_full_pipeline(
                     client=openai_client if eval_backend == "openai" else None,
                     backend=eval_backend,
                     local_model=eval_local_model,
+                    eval_system_prompt=eval_system_prompt,
+                    eval_ollama_options=eval_ollama_options,
+                    eval_think=eval_think,
+                    eval_openai_extras=eval_openai_extras,
                 )
                 eval_row = {**record, **eval_fields}
             else:
@@ -602,6 +652,8 @@ def run_full_pipeline(
                     source_parts.append(f"{src} - page {page}" if page != "" else src)
             eval_row["chunk_sources"] = " | ".join(dict.fromkeys(source_parts))
             eval_row["retrieved_chunks"] = json.dumps([c["text"] for c in chunks], ensure_ascii=False)
+            if profile_trace:
+                eval_row.update({k: v for k, v in profile_trace.items() if v is not None})
             rows.append(eval_row)
 
         # --- RAG'siz ---
@@ -609,6 +661,9 @@ def run_full_pipeline(
             no_rag_result = generate_no_rag_answer_ollama(
                 question=question,
                 model=qa_model,
+                system_prompt=qa_system_prompt,
+                ollama_options=qa_ollama_options,
+                think=qa_think,
             )
             record = {
                 "model": qa_model,
@@ -627,6 +682,10 @@ def run_full_pipeline(
                     client=openai_client if eval_backend == "openai" else None,
                     backend=eval_backend,
                     local_model=eval_local_model,
+                    eval_system_prompt=eval_system_prompt,
+                    eval_ollama_options=eval_ollama_options,
+                    eval_think=eval_think,
+                    eval_openai_extras=eval_openai_extras,
                 )
                 eval_row = {**record, **eval_fields}
             else:
@@ -638,6 +697,8 @@ def run_full_pipeline(
             eval_row["retrieved_chunk_size"] = 0
             eval_row["chunk_sources"] = ""
             eval_row["retrieved_chunks"] = ""
+            if profile_trace:
+                eval_row.update({k: v for k, v in profile_trace.items() if v is not None})
             rows.append(eval_row)
 
     return rows

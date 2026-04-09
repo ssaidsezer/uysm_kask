@@ -3,3 +3,7 @@ __pycache__
 hf_cache/
 .DS_Store
 .vscode
+
+# Local model profile store (runtime)
+web_backend/data/model_profiles.json
+web_backend/data/model_profiles.json.lock

@@ -2,11 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import MenuItem from '@mui/material/MenuItem'
+import Switch from '@mui/material/Switch'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { useMemo, useState } from 'react'
 import { api } from '../api/client'
+import type { ModelProfile } from './ModelProfilesPage'
 
 const CUSTOM = 'Model Adı Girin'
 const PRESETS = ['Varsayılan', 'Neşeli', 'Ciddi', 'Fısıltı'] as const
@@ -15,6 +18,10 @@ export function VoiceEvalPage() {
   const modelsQ = useQuery({
     queryKey: ['tts-models'],
     queryFn: async () => (await api.get('/api/voice/models')).data,
+  })
+  const profilesQ = useQuery({
+    queryKey: ['model-profiles'],
+    queryFn: async () => (await api.get<{ profiles: ModelProfile[] }>('/api/model-profiles')).data,
   })
 
   const downloaded = modelsQ.data?.downloaded_models ?? []
@@ -29,9 +36,14 @@ export function VoiceEvalPage() {
   const [customModel, setCustomModel] = useState('microsoft/speecht5_tts')
   const ttsModel = selectedOpt === CUSTOM ? customModel : selectedOpt
 
+  const ttsProfiles = profilesQ.data?.profiles ?? []
+
   const modelLower = ttsModel.toLowerCase()
   const [speakerId, setSpeakerId] = useState('4312')
   const [voicePreset, setVoicePreset] = useState<string>('Varsayılan')
+
+  const [ttsProfileId, setTtsProfileId] = useState('')
+  const [useSavedTtsDefaults, setUseSavedTtsDefaults] = useState(true)
 
   const [manualText, setManualText] = useState('')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -65,6 +77,8 @@ export function VoiceEvalPage() {
           voicePreset !== 'Varsayılan'
             ? voicePreset
             : undefined,
+        tts_profile_id: ttsProfileId || null,
+        use_saved_tts_defaults: useSavedTtsDefaults,
       },
       { responseType: 'arraybuffer' },
     )
@@ -154,6 +168,29 @@ export function VoiceEvalPage() {
           sx={{ mb: 2 }}
         />
       )}
+
+      <FormControlLabel
+        control={
+          <Switch checked={useSavedTtsDefaults} onChange={(_, v) => setUseSavedTtsDefaults(v)} />
+        }
+        label="Seçili TTS modeli için kayıtlı varsayılan profili kullan"
+        sx={{ mb: 1 }}
+      />
+      <TextField
+        select
+        fullWidth
+        label="TTS profili (opsiyonel, ek varsayılanlar)"
+        value={ttsProfileId}
+        onChange={(e) => setTtsProfileId(e.target.value)}
+        sx={{ mb: 2 }}
+      >
+        <MenuItem value="">— Profil seçme —</MenuItem>
+        {ttsProfiles.map((p) => (
+          <MenuItem key={p.id} value={p.id}>
+            {p.name} ({p.model_name})
+          </MenuItem>
+        ))}
+      </TextField>
 
       <Typography variant="subtitle2">Modele özgü parametreler</Typography>
       <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mb: 2 }}>

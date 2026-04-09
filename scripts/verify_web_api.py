@@ -11,7 +11,14 @@ import urllib.request
 
 def main() -> int:
     base = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
-    paths = ("/api/health", "/api/config", "/api/models/ollama", "/api/models/embeddings")
+    paths = (
+        "/api/health",
+        "/api/config",
+        "/api/models/ollama",
+        "/api/models/embeddings",
+        "/api/model-profiles",
+        "/api/model-profiles/default-templates",
+    )
     for path in paths:
         url = f"{base}{path}"
         try:

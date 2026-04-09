@@ -19,6 +19,7 @@ import { api } from '../api/client'
 import { CollectionPicker } from '../components/CollectionPicker'
 import { QaModelPicker } from '../components/QaModelPicker'
 import { ragTypeToFlags, type RagTypeUi } from '../utils/collections'
+import type { ModelProfile } from './ModelProfilesPage'
 
 const RAG_MODE_UI = ["RAG'li", "RAG'siz", 'İkisi birden'] as const
 const ragModeToApi: Record<(typeof RAG_MODE_UI)[number], 'rag' | 'no_rag' | 'both'> = {
@@ -48,6 +49,10 @@ export function ChatEvalPage() {
     queryKey: ['config'],
     queryFn: async () => (await api.get('/api/config')).data,
   })
+  const profilesQ = useQuery({
+    queryKey: ['model-profiles'],
+    queryFn: async () => (await api.get<{ profiles: ModelProfile[] }>('/api/model-profiles')).data,
+  })
 
   const allModels = ollamaQ.data?.models ?? []
   const embedModels = embedQ.data?.models ?? []
@@ -67,6 +72,12 @@ export function ChatEvalPage() {
   const [ragModeUi, setRagModeUi] = useState<(typeof RAG_MODE_UI)[number]>("RAG'li")
   const [k, setK] = useState(5)
   const [scoreTh, setScoreTh] = useState(0.55)
+
+  const [useSavedQaDefaults, setUseSavedQaDefaults] = useState(true)
+  const [bulkQaProfileId, setBulkQaProfileId] = useState('')
+  const [useSavedEvalDefaults, setUseSavedEvalDefaults] = useState(true)
+  const [evalProfileId, setEvalProfileId] = useState('')
+  const [thinkingEnabled, setThinkingEnabled] = useState(false)
 
   const [question, setQuestion] = useState('')
   const [expected, setExpected] = useState('')
@@ -91,8 +102,15 @@ export function ChatEvalPage() {
   const { smartRag, retrievalMode } = ragTypeToFlags(ragType)
   const ragModeApi = ragModeToApi[ragModeUi]
 
+  const qaProfiles = profilesQ.data?.profiles ?? []
+  const evalProfiles = profilesQ.data?.profiles ?? []
+
   const evalMut = useMutation({
     mutationFn: async () => {
+      const qaByModel: Record<string, string> = {}
+      if (bulkQaProfileId && qaSelected.length) {
+        for (const m of qaSelected) qaByModel[m] = bulkQaProfileId
+      }
       const { data } = await api.post('/api/chat/eval', {
         question: question.trim(),
         expected_answer: expected,
@@ -109,6 +127,11 @@ export function ChatEvalPage() {
         smart_rag: smartRag,
         score_threshold: scoreTh,
         retrieval_mode: retrievalMode,
+        thinking_enabled: thinkingEnabled,
+        use_saved_qa_defaults: useSavedQaDefaults,
+        qa_profile_by_model: qaByModel,
+        use_saved_eval_defaults: useSavedEvalDefaults,
+        eval_profile_id: evalProfileId || null,
       })
       return data
     },
@@ -159,6 +182,81 @@ export function ChatEvalPage() {
         customModels={customModels}
         onCustomModelsChange={setCustomModels}
       />
+
+      <Box
+        sx={{
+          mb: 2,
+          p: 2,
+          border: '1px solid',
+          borderColor: 'divider',
+          borderRadius: 2,
+        }}
+      >
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Kayıtlı model profilleri
+        </Typography>
+        <Stack spacing={1}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={useSavedQaDefaults}
+                onChange={(_, v) => setUseSavedQaDefaults(v)}
+              />
+            }
+            label="QA: modele göre varsayılan profili kullan"
+          />
+          <TextField
+            select
+            size="small"
+            label="Tüm seçili QA modelleri için profil (opsiyonel)"
+            value={bulkQaProfileId}
+            onChange={(e) => setBulkQaProfileId(e.target.value)}
+            slotProps={{ select: { native: true } }}
+            fullWidth
+          >
+            <option value="">— Profil seçme —</option>
+            {qaProfiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.model_name})
+              </option>
+            ))}
+          </TextField>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={thinkingEnabled}
+                onChange={(_, v) => setThinkingEnabled(v)}
+              />
+            }
+            label="Thinking (Ollama) — profil ile birleşir"
+          />
+          <FormControlLabel
+            control={
+              <Switch
+                checked={useSavedEvalDefaults}
+                onChange={(_, v) => setUseSavedEvalDefaults(v)}
+              />
+            }
+            label="Eval: modele göre varsayılan profili kullan"
+          />
+          <TextField
+            select
+            size="small"
+            label="Eval profili (opsiyonel)"
+            value={evalProfileId}
+            onChange={(e) => setEvalProfileId(e.target.value)}
+            slotProps={{ select: { native: true } }}
+            fullWidth
+          >
+            <option value="">— Profil seçme —</option>
+            {evalProfiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.model_name})
+              </option>
+            ))}
+          </TextField>
+        </Stack>
+      </Box>
 
       <Box sx={{ mb: 2 }}>
         <Box
@@ -406,6 +504,11 @@ export function ChatEvalPage() {
           {resp.model_results?.map((mr: any) => (
             <Box key={mr.model_name} sx={{ mb: 3 }}>
               <Typography variant="h6">{mr.model_name}</Typography>
+              {mr.profile_trace && Object.keys(mr.profile_trace).length > 0 && (
+                <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                  Profil izi: {JSON.stringify(mr.profile_trace)}
+                </Typography>
+              )}
               {mr.error && <Alert severity="error">{mr.error}</Alert>}
               {ragModeApi === 'both' && !mr.error ? (
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>

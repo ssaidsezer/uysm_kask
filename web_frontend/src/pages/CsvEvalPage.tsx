@@ -19,6 +19,7 @@ import { CollectionPicker } from '../components/CollectionPicker'
 import { QaModelPicker } from '../components/QaModelPicker'
 import { useJobPolling } from '../hooks/useJobPolling'
 import { ragTypeToFlags, type RagTypeUi } from '../utils/collections'
+import type { ModelProfile } from './ModelProfilesPage'
 
 const RAG_MODE_UI = ["RAG'li", "RAG'siz", 'İkisi birden'] as const
 const ragModeToApi: Record<(typeof RAG_MODE_UI)[number], string> = {
@@ -41,6 +42,10 @@ export function CsvEvalPage() {
   const cfg = useQuery({
     queryKey: ['config'],
     queryFn: async () => (await api.get('/api/config')).data,
+  })
+  const profilesQ = useQuery({
+    queryKey: ['model-profiles'],
+    queryFn: async () => (await api.get<{ profiles: ModelProfile[] }>('/api/model-profiles')).data,
   })
 
   const allModels = ollamaQ.data?.models ?? []
@@ -68,6 +73,12 @@ export function CsvEvalPage() {
   const [scoreTh, setScoreTh] = useState(0.55)
   const [openaiKey, setOpenaiKey] = useState('')
 
+  const [useSavedQaDefaults, setUseSavedQaDefaults] = useState(true)
+  const [bulkQaProfileId, setBulkQaProfileId] = useState('')
+  const [useSavedEvalDefaults, setUseSavedEvalDefaults] = useState(true)
+  const [evalProfileId, setEvalProfileId] = useState('')
+  const [thinkingEnabled, setThinkingEnabled] = useState(false)
+
   const [jobId, setJobId] = useState<string | null>(null)
   const jobQ = useJobPolling(jobId)
 
@@ -85,6 +96,8 @@ export function CsvEvalPage() {
 
   const { smartRag, retrievalMode } = ragTypeToFlags(ragType)
   const ragModeApi = ragModeToApi[ragModeUi]
+  const qaProfiles = profilesQ.data?.profiles ?? []
+  const evalProfiles = profilesQ.data?.profiles ?? []
 
   const startMut = useMutation({
     mutationFn: async () => {
@@ -103,8 +116,19 @@ export function CsvEvalPage() {
       fd.append('csv_score_threshold', String(scoreTh))
       fd.append('rag_mode', ragModeApi)
       fd.append('k', String(k))
+      fd.append('thinking_enabled', String(thinkingEnabled))
       fd.append('qa_models_json', JSON.stringify(qaSelected))
       if (openaiKey) fd.append('openai_api_key', openaiKey)
+      fd.append('use_saved_qa_defaults', String(useSavedQaDefaults))
+      const qaBy: Record<string, string> = {}
+      if (bulkQaProfileId && qaSelected.length) {
+        for (const m of qaSelected) qaBy[m] = bulkQaProfileId
+      }
+      fd.append('qa_profile_by_model_json', JSON.stringify(qaBy))
+      fd.append('qa_param_overrides_json', JSON.stringify({}))
+      fd.append('use_saved_eval_defaults', String(useSavedEvalDefaults))
+      if (evalProfileId) fd.append('eval_profile_id', evalProfileId)
+      fd.append('eval_param_overrides_json', JSON.stringify({}))
       const { data } = await api.post('/api/jobs/csv-pipeline', fd)
       return data.job_id as string
     },
@@ -140,6 +164,64 @@ export function CsvEvalPage() {
           customModels={customModels}
           onCustomModelsChange={setCustomModels}
         />
+      </Box>
+
+      <Box sx={sectionSx}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Kayıtlı model profilleri
+        </Typography>
+        <Stack spacing={1} sx={{ maxWidth: 720 }}>
+          <FormControlLabel
+            control={
+              <Switch checked={useSavedQaDefaults} onChange={(_, v) => setUseSavedQaDefaults(v)} />
+            }
+            label="QA: modele göre varsayılan profili kullan"
+          />
+          <TextField
+            select
+            size="small"
+            label="Tüm seçili QA modelleri için profil (opsiyonel)"
+            value={bulkQaProfileId}
+            onChange={(e) => setBulkQaProfileId(e.target.value)}
+            slotProps={{ select: { native: true } }}
+            fullWidth
+          >
+            <option value="">— Profil seçme —</option>
+            {qaProfiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.model_name})
+              </option>
+            ))}
+          </TextField>
+          <FormControlLabel
+            control={
+              <Switch checked={thinkingEnabled} onChange={(_, v) => setThinkingEnabled(v)} />
+            }
+            label="Thinking (Ollama)"
+          />
+          <FormControlLabel
+            control={
+              <Switch checked={useSavedEvalDefaults} onChange={(_, v) => setUseSavedEvalDefaults(v)} />
+            }
+            label="Eval: modele göre varsayılan profili kullan"
+          />
+          <TextField
+            select
+            size="small"
+            label="Eval profili (opsiyonel)"
+            value={evalProfileId}
+            onChange={(e) => setEvalProfileId(e.target.value)}
+            slotProps={{ select: { native: true } }}
+            fullWidth
+          >
+            <option value="">— Profil seçme —</option>
+            {evalProfiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.model_name})
+              </option>
+            ))}
+          </TextField>
+        </Stack>
       </Box>
 
       <Box sx={sectionSx}>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,13 @@ class ChatEvalRequest(BaseModel):
     smart_rag: bool = False
     score_threshold: float = 0.55
     retrieval_mode: Literal["vector", "bm25"] = "vector"
+    thinking_enabled: bool = False
+    use_saved_qa_defaults: bool = True
+    qa_profile_by_model: Dict[str, str] = Field(default_factory=dict)
+    qa_param_overrides: Optional[Dict[str, Any]] = None
+    use_saved_eval_defaults: bool = True
+    eval_profile_id: Optional[str] = None
+    eval_param_overrides: Optional[Dict[str, Any]] = None
 
 
 class ChunkCard(BaseModel):
@@ -129,6 +136,7 @@ class ChatModelResult(BaseModel):
     no_rag_answer: Optional[str] = None
     no_rag_eval: Optional[dict] = None
     no_rag_result_meta: Optional[dict] = None
+    profile_trace: Optional[Dict[str, Any]] = None
 
 
 class ChatEvalResponse(BaseModel):
@@ -145,6 +153,57 @@ class TTSRequest(BaseModel):
     model: str = "facebook/mms-tts-tur"
     speaker_id: Optional[str] = None
     voice_preset: Optional[str] = None
+    tts_profile_id: Optional[str] = None
+    use_saved_tts_defaults: bool = True
+    tts_param_overrides: Optional[Dict[str, Any]] = None
+
+
+class ModelProfileParams(BaseModel):
+    num_ctx: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    repeat_penalty: Optional[float] = None
+    num_predict: Optional[int] = None
+    think: Optional[bool] = None
+    speaker_id: Optional[str] = None
+    voice_preset: Optional[str] = None
+    tts_model: Optional[str] = None
+
+
+class ModelProfileBase(BaseModel):
+    name: str
+    model_name: str
+    system_prompt: Optional[str] = None
+    params: ModelProfileParams = Field(default_factory=ModelProfileParams)
+    is_default: bool = False
+
+
+class ModelProfileCreate(ModelProfileBase):
+    pass
+
+
+class ModelProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    model_name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    system_prompt_clear: bool = False
+    params: Optional[ModelProfileParams] = None
+    is_default: Optional[bool] = None
+
+
+class ModelProfileOut(BaseModel):
+    id: str
+    name: str
+    model_name: str
+    system_prompt: Optional[str] = None
+    params: Dict[str, Any]
+    is_default: bool
+    version: int
+    updated_at: str
+
+
+class ModelProfilesListResponse(BaseModel):
+    profiles: List[ModelProfileOut]
 
 
 class TTSModelsResponse(BaseModel):

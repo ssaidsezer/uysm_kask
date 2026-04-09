@@ -13,6 +13,7 @@ import { ChatEvalPage } from './pages/ChatEvalPage'
 import { CsvEvalPage } from './pages/CsvEvalPage'
 import { IndexPage } from './pages/IndexPage'
 import { ManagePage } from './pages/ManagePage'
+import { ModelProfilesPage } from './pages/ModelProfilesPage'
 import { VoiceEvalPage } from './pages/VoiceEvalPage'
 import { appTheme } from './theme'
 
@@ -21,6 +22,7 @@ const TAB_LABELS = [
   'CSV Değerlendirme',
   'Manuel Chat Eval',
   'Sesli Değerlendirme',
+  'Prompt & Model',
   'Yönetim',
   'Sonuç Analizi',
 ] as const
@@ -72,9 +74,12 @@ export default function App() {
           <VoiceEvalPage />
         </TabPanel>
         <TabPanel value={tab} index={4}>
-          <ManagePage />
+          <ModelProfilesPage />
         </TabPanel>
         <TabPanel value={tab} index={5}>
+          <ManagePage />
+        </TabPanel>
+        <TabPanel value={tab} index={6}>
           <AnalysisPage />
         </TabPanel>
       </Container>

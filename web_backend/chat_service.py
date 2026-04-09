@@ -23,6 +23,7 @@ from rag_index import (
     retrieve_chunks_smart,
 )
 
+from .model_profiles_store import resolve_eval_profile, resolve_qa_for_model
 from .schemas import ChatEvalRequest, ChatEvalResponse, ChatModelResult, ChunkCard
 
 
@@ -125,9 +126,27 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
 
     eval_model = req.eval_model_name or EVAL_MODEL_NAME
 
+    eval_sys, eval_oopts, eval_think_prof, eval_openai_extras, eval_trace = resolve_eval_profile(
+        eval_backend=req.eval_backend,
+        eval_model_name=eval_model,
+        local_eval_model_name=req.local_eval_model_name,
+        use_saved_defaults=req.use_saved_eval_defaults,
+        profile_id_override=req.eval_profile_id,
+        param_overrides=req.eval_param_overrides,
+    )
+
     for qa_model_name in selected:
         warmup_model(model=qa_model_name)
-        block = ChatModelResult(model_name=qa_model_name)
+        pid_override = (req.qa_profile_by_model or {}).get(qa_model_name)
+        qa_sys, qa_opts, qa_think_prof, qa_trace = resolve_qa_for_model(
+            qa_model_name,
+            use_saved_defaults=req.use_saved_qa_defaults,
+            profile_id_override=pid_override or None,
+            param_overrides=req.qa_param_overrides,
+        )
+        qa_think = bool(req.thinking_enabled or qa_think_prof)
+        trace = {**qa_trace, **eval_trace}
+        block = ChatModelResult(model_name=qa_model_name, profile_trace=trace or None)
         rag_record = rag_result = rag_eval = None
         no_rag_record = no_rag_result = no_rag_eval = None
 
@@ -137,6 +156,9 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
                     question=req.question,
                     context=context,
                     model=qa_model_name,
+                    system_prompt=qa_sys,
+                    ollama_options=qa_opts or None,
+                    think=qa_think,
                 )
                 rag_record = {
                     "model": f"{qa_model_name} (RAG)" if req.rag_mode == "both" else qa_model_name,
@@ -153,6 +175,10 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
                         client=openai_client,
                         backend="openai" if req.eval_backend == "OpenAI" else "ollama",
                         local_model=req.local_eval_model_name,
+                        eval_system_prompt=eval_sys,
+                        eval_ollama_options=eval_oopts or None,
+                        eval_think=eval_think_prof,
+                        eval_openai_extras=eval_openai_extras or None,
                     )
                 else:
                     rag_eval = {}
@@ -167,6 +193,9 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
                 no_rag_result = generate_no_rag_answer_ollama(
                     question=req.question,
                     model=qa_model_name,
+                    system_prompt=qa_sys,
+                    ollama_options=qa_opts or None,
+                    think=qa_think,
                 )
                 no_rag_record = {
                     "model": f"{qa_model_name} (RAG'siz)" if req.rag_mode == "both" else qa_model_name,
@@ -183,6 +212,10 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
                         client=openai_client,
                         backend="openai" if req.eval_backend == "OpenAI" else "ollama",
                         local_model=req.local_eval_model_name,
+                        eval_system_prompt=eval_sys,
+                        eval_ollama_options=eval_oopts or None,
+                        eval_think=eval_think_prof,
+                        eval_openai_extras=eval_openai_extras or None,
                     )
                 else:
                     no_rag_eval = {}
@@ -208,43 +241,43 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
         model_results.append(block)
 
         if rag_record and rag_result:
-            chat_eval_rows.append(
-                {
-                    "timestamp": run_timestamp,
-                    "model": qa_model_name,
-                    "mode": "RAG",
-                    "question": req.question,
-                    "expected_answer": (req.expected_answer or "").strip(),
-                    "model_answer": rag_record["model_answer"],
-                    "response_time_seconds": rag_record["response_time_seconds"],
-                    "tokens_per_second": rag_result.get("tokens_per_second") or "",
-                    "ai_score": (rag_eval or {}).get("ai_score", ""),
-                    "ai_verdict": (rag_eval or {}).get("ai_verdict", ""),
-                    "ai_hallucination_risk": (rag_eval or {}).get("ai_hallucination_risk", ""),
-                    "retrieved_chunks": json.dumps(
-                        [c["text"] for c in retrieved_chunks_list], ensure_ascii=False
-                    ),
-                }
-            )
+            row_rag = {
+                "timestamp": run_timestamp,
+                "model": qa_model_name,
+                "mode": "RAG",
+                "question": req.question,
+                "expected_answer": (req.expected_answer or "").strip(),
+                "model_answer": rag_record["model_answer"],
+                "response_time_seconds": rag_record["response_time_seconds"],
+                "tokens_per_second": rag_result.get("tokens_per_second") or "",
+                "ai_score": (rag_eval or {}).get("ai_score", ""),
+                "ai_verdict": (rag_eval or {}).get("ai_verdict", ""),
+                "ai_hallucination_risk": (rag_eval or {}).get("ai_hallucination_risk", ""),
+                "retrieved_chunks": json.dumps(
+                    [c["text"] for c in retrieved_chunks_list], ensure_ascii=False
+                ),
+            }
+            row_rag.update({k: v for k, v in trace.items() if v is not None})
+            chat_eval_rows.append(row_rag)
 
         if no_rag_record and no_rag_result:
-            chat_eval_rows.append(
-                {
-                    "timestamp": run_timestamp,
-                    "model": qa_model_name,
-                    "mode": "NO_RAG",
-                    "question": req.question,
-                    "expected_answer": (req.expected_answer or "").strip(),
-                    "model_answer": no_rag_record["model_answer"],
-                    "response_time_seconds": no_rag_record["response_time_seconds"],
-                    "eval_duration_seconds": no_rag_result.get("eval_duration_seconds") or "",
-                    "tokens_per_second": no_rag_result.get("tokens_per_second") or "",
-                    "ai_score": (no_rag_eval or {}).get("ai_score", ""),
-                    "ai_verdict": (no_rag_eval or {}).get("ai_verdict", ""),
-                    "ai_hallucination_risk": (no_rag_eval or {}).get("ai_hallucination_risk", ""),
-                    "retrieved_chunks": "[]",
-                }
-            )
+            row_nr = {
+                "timestamp": run_timestamp,
+                "model": qa_model_name,
+                "mode": "NO_RAG",
+                "question": req.question,
+                "expected_answer": (req.expected_answer or "").strip(),
+                "model_answer": no_rag_record["model_answer"],
+                "response_time_seconds": no_rag_record["response_time_seconds"],
+                "eval_duration_seconds": no_rag_result.get("eval_duration_seconds") or "",
+                "tokens_per_second": no_rag_result.get("tokens_per_second") or "",
+                "ai_score": (no_rag_eval or {}).get("ai_score", ""),
+                "ai_verdict": (no_rag_eval or {}).get("ai_verdict", ""),
+                "ai_hallucination_risk": (no_rag_eval or {}).get("ai_hallucination_risk", ""),
+                "retrieved_chunks": "[]",
+            }
+            row_nr.update({k: v for k, v in trace.items() if v is not None})
+            chat_eval_rows.append(row_nr)
 
         unload_model(qa_model_name)
 
