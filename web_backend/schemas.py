@@ -109,7 +109,6 @@ class ChatEvalRequest(BaseModel):
     openai_api_key: Optional[str] = None
     collection_name: str = ""
     embed_model: Optional[str] = None
-    think: bool = False
     smart_rag: bool = False
     score_threshold: float = 0.55
     retrieval_mode: Literal["vector", "bm25"] = "vector"

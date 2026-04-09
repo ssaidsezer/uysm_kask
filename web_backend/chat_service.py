@@ -137,7 +137,6 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
                     question=req.question,
                     context=context,
                     model=qa_model_name,
-                    think=req.think,
                 )
                 rag_record = {
                     "model": f"{qa_model_name} (RAG)" if req.rag_mode == "both" else qa_model_name,
@@ -168,7 +167,6 @@ def run_chat_eval(req: ChatEvalRequest, all_models: List[str]) -> ChatEvalRespon
                 no_rag_result = generate_no_rag_answer_ollama(
                     question=req.question,
                     model=qa_model_name,
-                    think=req.think,
                 )
                 no_rag_record = {
                     "model": f"{qa_model_name} (RAG'siz)" if req.rag_mode == "both" else qa_model_name,
@@ -267,5 +265,4 @@ def _meta(result: dict | None) -> dict | None:
         "response_time_seconds": result.get("response_time_seconds"),
         "tokens_per_second": result.get("tokens_per_second"),
         "eval_duration_seconds": result.get("eval_duration_seconds"),
-        "thinking": result.get("thinking"),
     }

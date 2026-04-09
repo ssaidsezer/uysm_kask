@@ -324,7 +324,6 @@ def _run_chat_eval(
     openai_api_key: str,
     collection_name: str,
     embed_model: str | None = None,
-    think: bool = False,
     smart_rag: bool = False,
     score_threshold: float = 0.55,
     retrieval_mode: str = "vector",
@@ -456,7 +455,6 @@ def _run_chat_eval(
                         question=question,
                         context=context,
                         model=qa_model_name,
-                        think=think,
                     )
                     rag_record = {
                         "model": f"{qa_model_name} (RAG)" if rag_mode == "both" else qa_model_name,
@@ -487,7 +485,6 @@ def _run_chat_eval(
                     no_rag_result = generate_no_rag_answer_ollama(
                         question=question,
                         model=qa_model_name,
-                        think=think,
                     )
                     no_rag_record = {
                         "model": f"{qa_model_name} (RAG'siz)" if rag_mode == "both" else qa_model_name,
@@ -836,7 +833,7 @@ def _render_csv_eval_tab(
     csv_retrieval_mode = retrieval_selection.retrieval_mode
     csv_score_threshold = 0.55
 
-    col_k, col_rag_mode, col_think = st.columns([2, 2, 1])
+    col_k, col_rag_mode = st.columns([2, 2])
     with col_rag_mode:
         rag_mode_label = st.radio(
             "Cevaplama modu",
@@ -856,18 +853,6 @@ def _render_csv_eval_tab(
             )
         else:
             k = 5
-    with col_think:
-        thinking_enabled = st.toggle(
-            "Thinking modu",
-            value=False,
-            key="csv_thinking_enabled",
-            help=(
-                "Reasoning modellerinde (Qwen3, QwQ vb.) thinking modunu açar. "
-                "Kapalıyken <think> blokları cevaba karışmaz, eval sonuçları temiz kalır. "
-                "Diğer modeller bu seçeneği zaten görmezden gelir."
-            ),
-        )
-
     if rag_mode != "no_rag" and csv_retrieval_mode == "vector":
         csv_score_threshold = st.slider(
             "Minimum eşleşme skoru (score threshold)",
@@ -912,7 +897,6 @@ def _render_csv_eval_tab(
                 rag_mode=rag_mode,
                 rag_mode_label=rag_mode_label,
                 k=int(k),
-                thinking_enabled=thinking_enabled,
                 qa_models_selected=qa_models_selected,
                 qdrant_url=qdrant_url,
                 openai_api_key=openai_api_key,
@@ -964,7 +948,6 @@ def _render_csv_eval_tab(
                             question_col=_kwargs["csv_question_col"],
                             answer_col=_kwargs["csv_answer_col"],
                             embed_model=_kwargs["csv_embed_model"],
-                            think=_kwargs.get("thinking_enabled", False),
                             smart_chunking=_kwargs.get("csv_smart_rag", False),
                             score_threshold=float(_kwargs.get("csv_score_threshold", 0.55)),
                             retrieval_mode=_kwargs.get("csv_retrieval_mode", "vector"),
@@ -1371,17 +1354,6 @@ def _render_chat_tab(
                 )
             else:
                 chat_score_threshold = 0.55
-            chat_thinking_enabled = st.toggle(
-                "Thinking modu",
-                value=False,
-                key="chat_thinking_enabled",
-                help=(
-                    "Reasoning modellerinde (Qwen3, QwQ vb.) thinking modunu açar. "
-                    "Kapalıyken <think> blokları cevaba karışmaz. "
-                    "Diğer modeller bu seçeneği zaten görmezden gelir."
-                ),
-            )
-
     chat_rag_mode_map = {"RAG'li": "rag", "RAG'siz": "no_rag", "İkisi birden": "both"}
     chat_rag_mode = chat_rag_mode_map[chat_rag_mode_label]
 
@@ -1422,7 +1394,6 @@ def _render_chat_tab(
                 openai_api_key=openai_api_key,
                 collection_name=chat_collection_name,
                 embed_model=chat_embed_model,
-                think=chat_thinking_enabled,
                 smart_rag=chat_smart_rag,
                 score_threshold=float(chat_score_threshold),
                 retrieval_mode=chat_retrieval_mode,

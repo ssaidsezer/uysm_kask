@@ -67,7 +67,6 @@ export function ChatEvalPage() {
   const [ragModeUi, setRagModeUi] = useState<(typeof RAG_MODE_UI)[number]>("RAG'li")
   const [k, setK] = useState(5)
   const [scoreTh, setScoreTh] = useState(0.55)
-  const [think, setThink] = useState(false)
 
   const [question, setQuestion] = useState('')
   const [expected, setExpected] = useState('')
@@ -107,7 +106,6 @@ export function ChatEvalPage() {
         openai_api_key: openaiKey || null,
         collection_name: collectionName,
         embed_model: embedModel || null,
-        think,
         smart_rag: smartRag,
         score_threshold: scoreTh,
         retrieval_mode: retrievalMode,
@@ -270,10 +268,6 @@ export function ChatEvalPage() {
                   sx={{ width: 120 }}
                 />
               )}
-              <FormControlLabel
-                control={<Switch checked={think} onChange={(_, v) => setThink(v)} />}
-                label="Thinking"
-              />
             </Stack>
             {ragModeApi !== 'no_rag' && retrievalMode === 'vector' && (
               <Box sx={{ mt: 1 }}>
@@ -418,6 +412,12 @@ export function ChatEvalPage() {
                   <Paper sx={{ p: 2, flex: 1 }}>
                     <Typography sx={{ fontWeight: 'bold' }}>RAG&apos;li</Typography>
                     <Typography sx={{ whiteSpace: 'pre-wrap' }}>{mr.rag_answer}</Typography>
+                    <Typography variant="caption" sx={{ display: 'block', mt: 1, opacity: 0.8 }}>
+                      Model meta
+                    </Typography>
+                    <pre style={{ fontSize: 12, overflow: 'auto' }}>
+                      {JSON.stringify(mr.rag_result_meta ?? {}, null, 2)}
+                    </pre>
                     <Collapse in={!!mr.rag_eval && evalEnabled}>
                       <pre style={{ fontSize: 12, overflow: 'auto' }}>
                         {JSON.stringify(mr.rag_eval, null, 2)}
@@ -427,6 +427,12 @@ export function ChatEvalPage() {
                   <Paper sx={{ p: 2, flex: 1 }}>
                     <Typography sx={{ fontWeight: 'bold' }}>RAG&apos;siz</Typography>
                     <Typography sx={{ whiteSpace: 'pre-wrap' }}>{mr.no_rag_answer}</Typography>
+                    <Typography variant="caption" sx={{ display: 'block', mt: 1, opacity: 0.8 }}>
+                      Model meta
+                    </Typography>
+                    <pre style={{ fontSize: 12, overflow: 'auto' }}>
+                      {JSON.stringify(mr.no_rag_result_meta ?? {}, null, 2)}
+                    </pre>
                     <Collapse in={!!mr.no_rag_eval && evalEnabled}>
                       <pre style={{ fontSize: 12, overflow: 'auto' }}>
                         {JSON.stringify(mr.no_rag_eval, null, 2)}
@@ -440,6 +446,16 @@ export function ChatEvalPage() {
                     <Typography sx={{ whiteSpace: 'pre-wrap', mt: 1 }}>
                       {ragModeApi === 'rag' ? mr.rag_answer : mr.no_rag_answer}
                     </Typography>
+                    <Typography variant="caption" sx={{ display: 'block', mt: 1, opacity: 0.8 }}>
+                      Model meta
+                    </Typography>
+                    <pre style={{ fontSize: 12, overflow: 'auto' }}>
+                      {JSON.stringify(
+                        ragModeApi === 'rag' ? mr.rag_result_meta ?? {} : mr.no_rag_result_meta ?? {},
+                        null,
+                        2,
+                      )}
+                    </pre>
                     <Collapse in={evalEnabled}>
                       <pre style={{ fontSize: 12 }}>
                         {JSON.stringify(

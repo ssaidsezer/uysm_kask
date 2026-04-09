@@ -65,7 +65,6 @@ export function CsvEvalPage() {
 
   const [ragModeUi, setRagModeUi] = useState<(typeof RAG_MODE_UI)[number]>("RAG'li")
   const [k, setK] = useState(5)
-  const [think, setThink] = useState(false)
   const [scoreTh, setScoreTh] = useState(0.55)
   const [openaiKey, setOpenaiKey] = useState('')
 
@@ -104,7 +103,6 @@ export function CsvEvalPage() {
       fd.append('csv_score_threshold', String(scoreTh))
       fd.append('rag_mode', ragModeApi)
       fd.append('k', String(k))
-      fd.append('thinking_enabled', String(think))
       fd.append('qa_models_json', JSON.stringify(qaSelected))
       if (openaiKey) fd.append('openai_api_key', openaiKey)
       const { data } = await api.post('/api/jobs/csv-pipeline', fd)
@@ -306,10 +304,6 @@ export function CsvEvalPage() {
                 sx={{ width: 120 }}
               />
             )}
-            <FormControlLabel
-              control={<Switch checked={think} onChange={(_, v) => setThink(v)} />}
-              label="Thinking modu"
-            />
           </Box>
 
           {ragModeApi !== 'no_rag' && retrievalMode === 'vector' && (

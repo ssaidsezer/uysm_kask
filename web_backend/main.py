@@ -340,7 +340,6 @@ async def start_csv_job(
     csv_score_threshold: float = Form(0.55),
     rag_mode: str = Form("rag"),
     k: int = Form(5),
-    thinking_enabled: bool = Form(False),
     qa_models_json: str = Form("[]"),
     openai_api_key: Optional[str] = Form(None),
 ) -> IndexJobStartResponse:
@@ -410,7 +409,6 @@ async def start_csv_job(
                     question_col=csv_question_col,
                     answer_col=csv_answer_col,
                     embed_model=csv_embed_model or "",
-                    think=thinking_enabled,
                     smart_chunking=csv_smart_rag,
                     score_threshold=float(csv_score_threshold),
                     retrieval_mode=csv_retrieval_mode,

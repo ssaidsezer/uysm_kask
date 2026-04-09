@@ -165,7 +165,6 @@ def _collect_ollama_chat_response(
     model: str,
     base_url: str,
     timeout: int,
-    think: bool,
 ) -> Dict:
     api_base = _require_ollama_base_url(base_url)
     t0 = time.time()
@@ -173,7 +172,6 @@ def _collect_ollama_chat_response(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "think": think,
     }
     resp = requests.post(
         f"{api_base}/api/chat",
@@ -183,20 +181,15 @@ def _collect_ollama_chat_response(
     resp.raise_for_status()
 
     chunks: list[str] = []
-    thinking_chunks: list[str] = []
     last_chunk = resp.json() or {}
     message = last_chunk.get("message") or {}
     content = message.get("content") or ""
-    thinking = message.get("thinking") or ""
     if content:
         chunks.append(content)
-    if thinking:
-        thinking_chunks.append(thinking)
 
     answer = "".join(chunks).replace("\r\n", "\n").strip()
     result = {
         "answer": answer,
-        "thinking": "".join(thinking_chunks).replace("\r\n", "\n").strip() if think else "",
         "response_time_seconds": time.time() - t0,
         "eval_count": None,
         "eval_duration_seconds": None,
@@ -218,7 +211,6 @@ def generate_rag_answer_ollama(
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
-    think: bool = False,
 ) -> Dict:
     """
     Call a local Ollama model (e.g. Qwen3 1.7B) with question + context.
@@ -233,7 +225,6 @@ def generate_rag_answer_ollama(
         model=model,
         base_url=base_url,
         timeout=timeout,
-        think=think,
     )
 
 
@@ -255,7 +246,6 @@ def generate_no_rag_answer_ollama(
     model: str = QA_OLLAMA_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = 120,
-    think: bool = False,
 ) -> Dict:
     """
     Call a local Ollama model WITHOUT any retrieved context (no RAG).
@@ -270,7 +260,6 @@ def generate_no_rag_answer_ollama(
         model=model,
         base_url=base_url,
         timeout=timeout,
-        think=think,
     )
 
 
@@ -504,7 +493,6 @@ def run_full_pipeline(
     eval_enabled: bool = True,
     question_col: str = "question",
     answer_col: str = "answer",
-    think: bool = False,
     smart_chunking: bool = False,
     score_threshold: float = 0.55,
     retrieval_mode: str = "vector",
@@ -579,7 +567,6 @@ def run_full_pipeline(
                 question=question,
                 context=context,
                 model=qa_model,
-                think=think,
             )
             record = {
                 "model": qa_model,
@@ -622,7 +609,6 @@ def run_full_pipeline(
             no_rag_result = generate_no_rag_answer_ollama(
                 question=question,
                 model=qa_model,
-                think=think,
             )
             record = {
                 "model": qa_model,
