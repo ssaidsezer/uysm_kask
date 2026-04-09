@@ -1,0 +1,6 @@
+# FastAPI stack for web_backend (install from repo root: pip install -r web_backend/requirements.txt)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+pandas>=2.0.0
+plotly>=5.18.0

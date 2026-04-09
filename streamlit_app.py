@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 WORKSPACE_DIR = Path(__file__).resolve().parent
 load_dotenv(WORKSPACE_DIR / ".env", override=True)
 
+# Web UI (React + FastAPI) migration: run backend `python -m uvicorn web_backend.main:app`
+# from repo root, then `npm run dev` in `web_frontend/`. This Streamlit app remains as fallback.
+
 from rag_index import (
     DEFAULT_COLLECTION_NAME,
     QDRANT_URL,
@@ -997,42 +1000,29 @@ def _render_csv_eval_tab(
             )
 
 
-def _render_sidebar_monitor() -> None:
-    with st.sidebar:
-        st.subheader("🧠 Sunucu Kaynakları")
-        monitor_url = os.environ.get("MONITOR_URL", "http://192.168.1.151:8081")
-
-        st.caption(f"Hedef: {monitor_url}")
-        if st.button("🔄 Kaynakları Yenile"):
-            pass
-
-        try:
-            m_resp = requests.get(f"{monitor_url}/stats", timeout=3)
-            if m_resp.status_code == 200:
-                stats = m_resp.json()
-
-                cpu_val = stats.get("cpu_usage", 0.0)
-                gpu_val = stats.get("gpu_usage", 0.0)
-                vram_u = stats.get("vram_used", 0)
-                vram_t = stats.get("vram_total", 0)
-
-                c1, c2 = st.columns(2)
-                c1.metric("CPU", f"%{cpu_val:.1f}")
-                c2.metric("GPU", f"%{gpu_val:.1f}")
-
-                if vram_t > 0:
-                    vram_pct = (float(vram_u) / float(vram_t)) * 100
-                    st.metric("VRAM", f"{vram_u} / {vram_t} MB", f"%{vram_pct:.1f} dolu", delta_color="off")
-                else:
-                    st.metric("VRAM", f"{vram_u} MB", "Bilgi alınamadı", delta_color="off")
-            else:
-                st.error("Sistem bilgisi alınamadı.")
-        except Exception:
-            st.error("Monitor servisine ulaşılamadı. Lütfen sunucudaki Docker'ın açık olduğundan ve port 8081'in açık olduğundan emin olun.")
+def _render_server_monitor_card() -> None:
+    monitor_url = os.environ.get("MONITOR_URL", "http://192.168.1.151:8081")
+    try:
+        m_resp = requests.get(f"{monitor_url}/stats", timeout=3)
+        if m_resp.status_code == 200:
+            stats = m_resp.json()
+            cpu_val = stats.get("cpu_usage", 0.0)
+            gpu_val = stats.get("gpu_usage", 0.0)
+            vram_u = stats.get("vram_used", 0)
+            vram_t = stats.get("vram_total", 0)
+            vram_pct = (float(vram_u) / float(vram_t)) * 100 if vram_t > 0 else 0.0
+            st.success(
+                f"🧠 Sunucu: CPU %{cpu_val:.1f} | GPU %{gpu_val:.1f} | "
+                f"VRAM {vram_u}/{vram_t} MB (%{vram_pct:.1f})"
+            )
+        else:
+            st.warning("🧠 Sunucu: Sistem bilgisi alınamadı.")
+    except Exception:
+        st.warning(f"🧠 Sunucu: Monitor erişilemiyor ({monitor_url})")
 
 
 def _render_connection_status(qdrant_url: str) -> None:
-    conn_cols = st.columns(2)
+    conn_cols = st.columns(3)
     with conn_cols[0]:
         try:
             resp = requests.get(f"{qdrant_url}/collections", timeout=5)
@@ -1042,14 +1032,17 @@ def _render_connection_status(qdrant_url: str) -> None:
             st.error(f"Qdrant erişilemiyor ({qdrant_url})")
 
     ollama_base = _get_ollama_base_url()
-    if ollama_base:
-        with conn_cols[1]:
+    with conn_cols[1]:
+        if ollama_base:
             try:
                 resp = requests.get(f"{ollama_base}/api/tags", timeout=5)
                 resp.raise_for_status()
                 st.success(f"Ollama bağlı ({ollama_base})")
             except Exception:
                 st.error(f"Ollama erişilemiyor ({ollama_base})")
+
+    with conn_cols[2]:
+        _render_server_monitor_card()
 
 def _render_index_tab(
     all_models: List[str],
@@ -2133,8 +2126,6 @@ def main() -> None:
         "PDF'leri Qdrant'a indeksle (Ollama embedding ile), CSV'den soruları değerlendir, "
         "cevapları Ollama ile üret ve değerlendir."
     )
-
-    _render_sidebar_monitor()
 
     openai_api_key = os.environ.get("OPENAI_API_KEY", "")
     qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)

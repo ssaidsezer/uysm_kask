@@ -1,0 +1,312 @@
+import { useMutation, useQuery } from '@tanstack/react-query'
+import Alert from '@mui/material/Alert'
+import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
+import FormControlLabel from '@mui/material/FormControlLabel'
+import LinearProgress from '@mui/material/LinearProgress'
+import Radio from '@mui/material/Radio'
+import RadioGroup from '@mui/material/RadioGroup'
+import Stack from '@mui/material/Stack'
+import TextField from '@mui/material/TextField'
+import Typography from '@mui/material/Typography'
+import { useEffect, useMemo, useState } from 'react'
+import { api } from '../api/client'
+import {
+  collectionNameFull,
+  smartCollectionNameFull,
+} from '../utils/collections'
+import { useJobPolling } from '../hooks/useJobPolling'
+
+export function IndexPage() {
+  const cfgQ = useQuery({
+    queryKey: ['config'],
+    queryFn: async () => (await api.get('/api/config')).data,
+  })
+  const embedQ = useQuery({
+    queryKey: ['embed-models'],
+    queryFn: async () => (await api.get('/api/models/embeddings')).data,
+  })
+  const ollamaQ = useQuery({
+    queryKey: ['ollama-models'],
+    queryFn: async () => (await api.get('/api/models/ollama')).data,
+  })
+
+  const [files, setFiles] = useState<File[]>([])
+  const [indexMode, setIndexMode] = useState<'classic' | 'smart'>('classic')
+  const embedModels = embedQ.data?.models ?? []
+  const [embedModel, setEmbedModel] = useState('')
+  const [chunkSize, setChunkSize] = useState(cfgQ.data?.chunk_size_default ?? 1000)
+  const [chunkOverlap, setChunkOverlap] = useState(cfgQ.data?.chunk_overlap_default ?? 200)
+  const [smartParent, setSmartParent] = useState(cfgQ.data?.smart_parent_size ?? 3000)
+  const [smartChild, setSmartChild] = useState(cfgQ.data?.smart_child_size ?? 500)
+  const [smartOverlap, setSmartOverlap] = useState(cfgQ.data?.smart_child_overlap ?? 100)
+  const [boundaryModel, setBoundaryModel] = useState(
+    () => cfgQ.data?.smart_boundary_llm_model ?? 'qwen3:1.7b',
+  )
+
+  const [jobId, setJobId] = useState<string | null>(null)
+  const jobQ = useJobPolling(jobId)
+
+  useEffect(() => {
+    if (!cfgQ.data || !embedModels.length || embedModel) return
+    const pick = embedModels[0] ?? ''
+    setEmbedModel(pick)
+  }, [cfgQ.data, embedModels, embedModel])
+
+  const qaModels = ollamaQ.data?.models ?? []
+  useEffect(() => {
+    if (!cfgQ.data?.smart_boundary_llm_model || !qaModels.length) return
+    if (qaModels.includes(cfgQ.data.smart_boundary_llm_model)) {
+      setBoundaryModel(cfgQ.data.smart_boundary_llm_model)
+    }
+  }, [cfgQ.data, qaModels])
+
+  const baseName = cfgQ.data?.default_collection_name ?? 'uysm'
+  const qdrantUrl = cfgQ.data?.qdrant_url ?? ''
+
+  const preview = useMemo(() => {
+    if (!embedModel) return { text: '', smart: false }
+    if (indexMode === 'smart') {
+      const name = smartCollectionNameFull(
+        baseName,
+        embedModel,
+        smartParent,
+        smartChild,
+        smartOverlap,
+      )
+      return {
+        smart: true,
+        text: `Smart RAG | Embedding: ${embedModel} | Sınır LLM: ${boundaryModel} | Koleksiyonlar: ${name}_parents / ${name}_children | Qdrant: ${qdrantUrl}`,
+      }
+    }
+    const name = collectionNameFull(baseName, embedModel, chunkSize, chunkOverlap)
+    return {
+      smart: false,
+      text: `Klasik RAG | Embedding: ${embedModel} | Koleksiyon: ${name} | Qdrant: ${qdrantUrl}`,
+    }
+  }, [
+    baseName,
+    embedModel,
+    indexMode,
+    qdrantUrl,
+    smartParent,
+    smartChild,
+    smartOverlap,
+    boundaryModel,
+    chunkSize,
+    chunkOverlap,
+  ])
+
+  const startMut = useMutation({
+    mutationFn: async () => {
+      const fd = new FormData()
+      files.forEach((f) => fd.append('files', f))
+      fd.append('use_smart', String(indexMode === 'smart'))
+      fd.append('embed_model', embedModel)
+      fd.append('chunk_size', String(chunkSize))
+      fd.append('chunk_overlap', String(chunkOverlap))
+      fd.append('smart_parent_size', String(smartParent))
+      fd.append('smart_child_size', String(smartChild))
+      fd.append('smart_child_overlap', String(smartOverlap))
+      fd.append('boundary_llm_model', boundaryModel)
+      const { data } = await api.post('/api/jobs/index', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      return data.job_id as string
+    },
+    onSuccess: (id) => setJobId(id),
+  })
+
+  const result = jobQ.data?.result as Record<string, unknown> | undefined
+  const prog = jobQ.data?.progress
+
+  return (
+    <Box>
+      <Typography variant="h6" gutterBottom>
+        PDF&apos;leri Qdrant&apos;a indeksle (Ollama Embedding)
+      </Typography>
+      <Button variant="outlined" component="label" sx={{ mr: 1, mb: 2 }}>
+        PDF yükle
+        <input
+          type="file"
+          hidden
+          multiple
+          accept=".pdf"
+          onChange={(e) => setFiles(e.target.files ? Array.from(e.target.files) : [])}
+        />
+      </Button>
+      {files.length > 0 && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {files.map((f) => f.name).join(', ')}
+        </Typography>
+      )}
+
+      <RadioGroup
+        row
+        value={indexMode}
+        onChange={(_, v) => setIndexMode(v as 'classic' | 'smart')}
+      >
+        <FormControlLabel
+          value="classic"
+          control={<Radio />}
+          label="Klasik (sabit boyut chunking)"
+        />
+        <FormControlLabel
+          value="smart"
+          control={<Radio />}
+          label="Smart (LLM semantik chunking)"
+        />
+      </RadioGroup>
+
+      {embedQ.isLoading && (
+        <Alert severity="info" sx={{ my: 1 }}>
+          Embedding modelleri yükleniyor...
+        </Alert>
+      )}
+
+      {!embedQ.isLoading && embedModels.length === 0 && (
+        <Alert severity="error" sx={{ my: 1 }}>
+          Embedding modelleri yüklenemedi: {embedQ.data?.error || 'Bilinmeyen hata'}
+        </Alert>
+      )}
+
+      {embedModels.length > 0 && (
+        <>
+          <TextField
+            select
+            fullWidth
+            label="Embedding modeli"
+            value={embedModel}
+            onChange={(e) => setEmbedModel(e.target.value)}
+            slotProps={{ select: { native: true } }}
+            sx={{ mb: 2 }}
+          >
+            {embedModels.map((m: string) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </TextField>
+
+          {indexMode === 'smart' ? (
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }}>
+              <TextField
+                label="Parent blok boyutu (karakter)"
+                type="number"
+                value={smartParent}
+                onChange={(e) => setSmartParent(+e.target.value)}
+              />
+              <TextField
+                label="Child chunk boyutu"
+                type="number"
+                value={smartChild}
+                onChange={(e) => setSmartChild(+e.target.value)}
+              />
+              <TextField
+                label="Child overlap"
+                type="number"
+                value={smartOverlap}
+                onChange={(e) => setSmartOverlap(+e.target.value)}
+              />
+              <TextField
+                select
+                label="Sınır LLM"
+                value={boundaryModel}
+                onChange={(e) => setBoundaryModel(e.target.value)}
+                slotProps={{ select: { native: true } }}
+                fullWidth
+              >
+                {(qaModels.length ? qaModels : ['Model Yok']).map((m: string) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </TextField>
+            </Stack>
+          ) : (
+            <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+              <TextField
+                label="Chunk boyutu"
+                type="number"
+                value={chunkSize}
+                onChange={(e) => setChunkSize(+e.target.value)}
+              />
+              <TextField
+                label="Chunk overlap"
+                type="number"
+                value={chunkOverlap}
+                onChange={(e) => setChunkOverlap(+e.target.value)}
+              />
+            </Stack>
+          )}
+        </>
+      )}
+
+      {preview.text && <Alert severity="info">{preview.text}</Alert>}
+      {indexMode === 'smart' && smartChild >= smartParent && (
+        <Alert severity="warning" sx={{ mt: 1 }}>
+          Child boyutu parent’a eşit veya büyük — Smart chunking avantajı azalır.
+        </Alert>
+      )}
+
+      <Button
+        variant="contained"
+        sx={{ mt: 2 }}
+        disabled={!embedModel || files.length === 0 || startMut.isPending}
+        onClick={() => startMut.mutate()}
+      >
+        İndeksi oluştur / güncelle
+      </Button>
+
+      {jobId && jobQ.data?.status === 'running' && (
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="caption">
+            {prog?.phase} — {prog?.current}/{prog?.total} ({prog?.elapsed_sec?.toFixed?.(1)}s)
+          </Typography>
+          <LinearProgress />
+        </Box>
+      )}
+
+      {jobQ.data?.status === 'failed' && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {jobQ.data.error}
+        </Alert>
+      )}
+
+      {jobQ.data?.status === 'completed' && result && (
+        <Box sx={{ mt: 2 }}>
+          {'total_chunks' in result ? (
+            <>
+              <Alert severity="success">
+                İndeksleme tamamlandı! Toplam {String(result.total_chunks)} chunk.
+              </Alert>
+              <Typography variant="subtitle2" sx={{ mt: 1 }}>
+                Süre: PDF {String(result.pdf_extract_sec)}s | Embed{' '}
+                {String(result.ollama_embed_sec)}s | Qdrant {String(result.qdrant_upsert_sec)}
+                s | Toplam {String(result.total_sec)}s
+              </Typography>
+            </>
+          ) : (
+            <>
+              <Alert severity="success">
+                Smart indeksleme tamamlandı! Toplam {String(result.total_parents)} parent,{' '}
+                {String(result.total_children)} child.
+              </Alert>
+              <Typography variant="subtitle2" sx={{ mt: 1 }}>
+                PDF {String(result.pdf_extract_sec)}s | LLM {String(result.llm_boundary_sec)}s |
+                Parent store {String(result.parent_store_sec)}s | Child embed{' '}
+                {String(result.child_embed_sec)}s | Child upsert {String(result.child_upsert_sec)}
+                s | Toplam {String(result.total_sec)}s
+              </Typography>
+              {Number(result.timeout_count) > 0 && (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  LLM boundary: {String(result.timeout_count)} timeout
+                </Alert>
+              )}
+            </>
+          )}
+        </Box>
+      )}
+    </Box>
+  )
+}

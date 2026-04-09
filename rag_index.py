@@ -6,11 +6,13 @@ import re as _re
 import time
 import hashlib
 import uuid
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 import pdfplumber
 import requests
 import qdrant_client as _qdrant_pkg
+from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
@@ -24,6 +26,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Config  – .env dosyasından veya ortam değişkenlerinden okunur
 # ---------------------------------------------------------------------------
+# Bu modül import edilir edilmez env değerlerini okuyor; bu yüzden .env'yi
+# burada da erken yüklemek gerekiyor.
+WORKSPACE_DIR = Path(__file__).resolve().parent
+load_dotenv(WORKSPACE_DIR / ".env", override=True)
+
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
 OLLAMA_EMBED_MODEL = ""
 QDRANT_URL = os.getenv("QDRANT_URL", "http://192.168.0.149:6333")
