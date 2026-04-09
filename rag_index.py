@@ -35,25 +35,8 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "")
 OLLAMA_EMBED_MODEL = ""
 QDRANT_URL = os.getenv("QDRANT_URL", "http://192.168.0.149:6333")
 DEFAULT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "uysm")
-DEBUG_LOG_PATH = os.path.join(os.path.dirname(__file__), "debug-3c80e4.log")
-DEBUG_SESSION_ID = "3c80e4"
-
-
 def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        payload = {
-            "sessionId": DEBUG_SESSION_ID,
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    return None
 
 # ---------------------------------------------------------------------------
 # Qdrant bağlantısı
