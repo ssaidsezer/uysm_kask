@@ -3,6 +3,7 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Collapse from '@mui/material/Collapse'
+import CircularProgress from '@mui/material/CircularProgress'
 import Divider from '@mui/material/Divider'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import Paper from '@mui/material/Paper'
@@ -72,6 +73,7 @@ export function ChatEvalPage() {
   const [expected, setExpected] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
 
   const [resp, setResp] = useState<any>(null)
 
@@ -112,7 +114,21 @@ export function ChatEvalPage() {
       })
       return data
     },
+    onMutate: () => {
+      setIsGenerating(true)
+      setFormError(null)
+      setResp(null)
+    },
     onSuccess: (data) => setResp(data),
+    onError: (err: any) => {
+      const apiMessage =
+        err?.response?.data?.detail ||
+        err?.response?.data?.message ||
+        err?.message ||
+        'Yanıtlar üretilirken bir hata oluştu.'
+      setFormError(String(apiMessage))
+    },
+    onSettled: () => setIsGenerating(false),
   })
 
   const downloadChatCsv = () => {
@@ -302,7 +318,7 @@ export function ChatEvalPage() {
       <Button
         variant="contained"
         fullWidth
-        disabled={evalMut.isPending}
+        disabled={isGenerating}
         onClick={() => {
           const q = question.trim()
           if (!q) {
@@ -313,12 +329,22 @@ export function ChatEvalPage() {
             setFormError('Seçili retrieval tipi için geçerli bir koleksiyon bulunamadı.')
             return
           }
-          setFormError(null)
           evalMut.mutate()
         }}
       >
-        Soruyu değerlendir
+        {isGenerating ? 'Yanıtlar üretiliyor...' : 'Soruyu değerlendir'}
       </Button>
+
+      {isGenerating && (
+        <Alert severity="info" sx={{ mt: 2 }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <CircularProgress size={16} />
+            <Typography variant="body2">
+              Yanıtlar üretiliyor. İşlem bitince buton otomatik açılacak.
+            </Typography>
+          </Stack>
+        </Alert>
+      )}
 
       {formError && (
         <Alert severity="error" sx={{ mt: 2 }}>
