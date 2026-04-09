@@ -1,6 +1,13 @@
-# FastAPI stack for web_backend (install from repo root: pip install -r web_backend/requirements.txt)
+# FastAPI stack + RAG core (pipeline, rag_index). Install from repo root: pip install -r requirements.txt
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 pandas>=2.0.0
 plotly>=5.18.0
+openai>=1.0.0
+pdfplumber
+requests
+python-dotenv
+numpy<2
+qdrant-client>=1.17.0
+rank-bm25>=0.2.2

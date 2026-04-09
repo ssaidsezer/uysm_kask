@@ -1,4 +1,4 @@
-"""Helpers mirrored from streamlit_app.py without Streamlit (HTTP + pure logic)."""
+"""Shared helpers for Ollama/Qdrant HTTP calls and collection naming (HTTP + pure logic)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-/** Mirror streamlit_app _collection_name_full / _smart_collection_name_full. */
+/** Build full Qdrant collection names from base name, embed model, and chunk params. */
 
 function safeEmbed(embed: string) {
   return embed.replace(/:/g, '_').replace(/\//g, '_').replace(/\./g, '_')

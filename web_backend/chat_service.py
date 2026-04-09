@@ -1,4 +1,4 @@
-"""Manual chat evaluation — same logic as streamlit _run_chat_eval, returns JSON."""
+"""Manual chat evaluation — retrieval, QA, and scoring; returns JSON for the API."""
 
 from __future__ import annotations
 

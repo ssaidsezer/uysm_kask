@@ -1,4 +1,4 @@
-"""Sonuç Analizi — same computations as streamlit _render_analysis_tab; returns Plotly JSON."""
+"""Sonuç Analizi — export CSV metrics and charts; returns Plotly JSON for the API."""
 
 from __future__ import annotations
 

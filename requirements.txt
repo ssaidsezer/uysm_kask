@@ -1,3 +1,2 @@
-﻿# Streamlit arayüzü, RAG (rag_index, pipeline) ve BM25 için bağımlılıklar
--r ui_files/requirements-ui.txt
+﻿# Web API (FastAPI), RAG (rag_index, pipeline), BM25 ve paylaşılan bağımlılıklar
 -r web_backend/requirements.txt

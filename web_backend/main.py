@@ -1,4 +1,4 @@
-"""FastAPI application — full parity with streamlit_app.py tabs."""
+"""FastAPI application for RAG indexing, evaluation, and management APIs."""
 
 from __future__ import annotations
 
